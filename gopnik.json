@@ -6,8 +6,12 @@
       ".venv/bin/ruff check .",
       ".venv/bin/pytest"
     ],
-    "stage2": [],
-    "notes": "stage2 is still empty. Put here what proves it works where it really runs: run it where it actually runs and drive one real request through it.",
+    "stage2": [
+      "docker build -q -t pigeon-bot:stage2 .",
+      "sh -c 'docker run --rm pigeon-bot:stage2 >/dev/null 2>&1; test $? -eq 1'",
+      "docker run --rm --env-file .env pigeon-bot:stage2 python -c \"import os,urllib.request,json; t=os.environ['PIGEON_BOT_TOKEN']; d=json.load(urllib.request.urlopen(f'https://api.telegram.org/bot{t}/getMe')); assert d['ok']; print('getMe ok:', d['result']['username'])\""
+    ],
+    "notes": "Stage 2 is a local stand: a dev bot (@the_bum_bot) with its token in .env at the project root (git-ignored; never commit or print it). The image is built from the working tree (no CD). Checks: the image refuses to start without a token, and the dev token reaches Telegram from inside the image. A full product check (add the bot to a dev group, /pigeon setup, /pigeon arrive, tap the button, /pigeon stats) is manual, and needs a human to tap in Telegram. Revision proof is not yet recorded: the local image is not tagged with a commit SHA.",
     "//stage2_unreachable": "Only if there is genuinely nowhere to deploy. Set it to WHY, and every verdict narrows to Stage 1 and quotes that reason. Leaving it blank is rejected: a narrowed verdict that cannot say why is the gap this key exists to make visible.",
     "//stage2_unreachable_example": "no dev cluster; this is an internal script run by hand",
     "artifact_kind": "service",
