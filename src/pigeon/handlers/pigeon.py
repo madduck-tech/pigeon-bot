@@ -11,7 +11,7 @@ from aiogram.types import CallbackQuery, Message
 
 from pigeon.clock import Clock
 from pigeon.render import texts
-from pigeon.repo.store import Store
+from pigeon.repo.store import Store, minute_key
 from pigeon.services import game
 from pigeon.telegram.messages import TelegramArrivalSender, pluck_keyboard
 
@@ -64,6 +64,18 @@ def build_router(store: Store, clock: Clock) -> Router:
             await message.answer(texts.NOT_ENABLED)
             return
 
+        if sub == "quiet":
+            if not await is_admin(message):
+                await message.answer(texts.ADMIN_ONLY)
+                return
+            bounds = _quiet_bounds(parts[1:3])
+            if bounds is None:
+                await message.answer(texts.QUIET_BAD)
+                return
+            store.set_quiet_hours(chat_id, *bounds)
+            await message.answer(texts.QUIET_SET.format(start=bounds[0], end=bounds[1]))
+            return
+
         if sub == "stats":
             rows = store.leaderboard(chat_id)
             await message.answer(texts.stats(rows) if rows else texts.NO_STATS)
@@ -108,7 +120,23 @@ def build_router(store: Store, clock: Clock) -> Router:
         else:
             await callback.answer(texts.HIT_NO_EVENT)
 
+    @router.message(F.chat.type.in_(GROUP_TYPES))
+    async def count_group_message(message: Message) -> None:
+        # Live-chat check: only a per-minute count is kept, never the message text.
+        # Runs after the /pigeon command handler, so commands are not counted.
+        if store.is_enabled(message.chat.id):
+            store.record_message(message.chat.id, minute_key(clock.now()))
+
     return router
+
+
+def _quiet_bounds(args: list[str]) -> tuple[int, int] | None:
+    if len(args) != 2 or not all(a.isdigit() for a in args):
+        return None
+    start, end = int(args[0]), int(args[1])
+    if not (0 <= start <= 23 and 0 <= end <= 23 and end < start):
+        return None
+    return start, end
 
 
 async def _refresh_arrival(callback: CallbackQuery, store: Store, event_id: int) -> None:

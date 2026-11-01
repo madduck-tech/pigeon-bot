@@ -1,4 +1,4 @@
-"""Core mechanics for M1: arrival, hit, leaderboard. No aiogram imports here."""
+"""Core mechanics for M1: arrival, hit, trophy. No aiogram imports here."""
 
 from __future__ import annotations
 
@@ -38,6 +38,7 @@ def arrive(store: Store, clock: Clock, chat_id: int, source: str = "manual") -> 
             return None
         store.close_event(current.id)
     event_id = store.open_event(chat_id, now, now + ARRIVAL_WINDOW, source=source)
+    store.mark_dashboard_dirty(chat_id)
     event = store.get_event(event_id)
     assert event is not None
     return event
@@ -46,7 +47,10 @@ def arrive(store: Store, clock: Clock, chat_id: int, source: str = "manual") -> 
 def hit(
     store: Store, clock: Clock, chat_id: int, event_id: int, user_id: int, name: str
 ) -> HitOutcome:
-    """Register a hit by a user on an arrival. One hit per user per arrival."""
+    """Register a hit by a user on an arrival. One hit per user per arrival.
+
+    The first hit on an arrival also takes the trophy (Золотой помёт) for that user.
+    """
     event = store.get_event(event_id)
     if event is None or event.chat_id != chat_id:
         return HitOutcome.NO_EVENT
@@ -54,17 +58,12 @@ def hit(
     if event.status != "open" or now >= event.closes_at:
         if event.status == "open":
             store.close_event(event.id)
+            store.mark_dashboard_dirty(chat_id)
         return HitOutcome.CLOSED
     store.upsert_member(chat_id, user_id, name)
     if not store.add_hit(chat_id, event.id, user_id, now, HIT_POINTS):
         return HitOutcome.ALREADY
+    if store.hit_count(event.id) == 1:
+        store.set_trophy(chat_id, user_id, name, now)
+    store.mark_dashboard_dirty(chat_id)
     return HitOutcome.HIT
-
-
-def close_expired(store: Store, clock: Clock, chat_id: int) -> Event | None:
-    """Close the open arrival if its window has passed. Returns the closed event, if any."""
-    current = store.current_open_event(chat_id)
-    if current is not None and clock.now() >= current.closes_at:
-        store.close_event(current.id)
-        return current
-    return None

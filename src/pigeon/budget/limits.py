@@ -1,20 +1,23 @@
-"""Limits on spontaneous (automatic) arrivals and the hours when the bot plans them.
+"""Limits on spontaneous (automatic) arrivals: budget, quiet hours, live-chat check.
 
-All times are chat-local. Storage and comparisons use aware datetimes.
+All local times are chat-local. Storage and comparisons use aware datetimes.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from pigeon.repo.store import Store
+from pigeon.repo.store import Store, minute_key
 
 DAILY_AUTO_LIMIT = 1
 WEEKLY_AUTO_LIMIT = 3
 
-# Automatic arrivals are planned inside this local window; outside it is quiet hours.
-PLAN_START_HOUR = 10
-PLAN_END_HOUR = 22
+# Live-chat check: if at least LIVE_THRESHOLD messages arrived in the last LIVE_WINDOW,
+# the arrival is postponed by POSTPONE_MINUTES, at most MAX_POSTPONES times.
+LIVE_WINDOW = timedelta(minutes=10)
+LIVE_THRESHOLD = 5
+POSTPONE = timedelta(minutes=15)
+MAX_POSTPONES = 2
 
 
 def local_day_start_utc(local_now: datetime) -> datetime:
@@ -37,11 +40,19 @@ def can_plan_auto(store: Store, chat_id: int, local_now: datetime) -> bool:
     return week_count < WEEKLY_AUTO_LIMIT
 
 
-def plan_window(local_now: datetime) -> tuple[datetime, datetime]:
-    """The local interval [start, end) in which today's arrival may be placed.
+def plan_window(local_now: datetime, quiet_start: int, quiet_end: int) -> tuple[datetime, datetime]:
+    """The local interval [start, end) for today's arrival: from quiet_end to quiet_start.
 
-    The start is never earlier than now, so a plan made late in the day cannot land in the past.
+    Quiet hours are the complement, so the window needs quiet_end < quiet_start (validated
+    when the admin sets them). The start is never earlier than now, so a late plan cannot land
+    in the past.
     """
-    start = local_now.replace(hour=PLAN_START_HOUR, minute=0, second=0, microsecond=0)
-    end = local_now.replace(hour=PLAN_END_HOUR, minute=0, second=0, microsecond=0)
+    start = local_now.replace(hour=quiet_end, minute=0, second=0, microsecond=0)
+    end = local_now.replace(hour=quiet_start, minute=0, second=0, microsecond=0)
     return max(start, local_now), end
+
+
+def is_live_chat(store: Store, chat_id: int, now: datetime) -> bool:
+    """True if the chat is busy enough that a spontaneous arrival would interrupt it."""
+    since = minute_key(now - LIVE_WINDOW)
+    return store.messages_since(chat_id, since) >= LIVE_THRESHOLD

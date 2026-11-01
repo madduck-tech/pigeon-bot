@@ -66,7 +66,7 @@ async def test_plans_once_per_day_inside_daytime_window(store, clock, sender) ->
     plan = store.get_plan(CHAT, "2026-11-02")
     assert plan is not None and plan.status == "pending"
     local = plan.planned_at.astimezone(ZoneInfo(TZ))
-    assert 10 <= local.hour < 22
+    assert 9 <= local.hour < 23  # default quiet hours are 23:00-09:00
     assert sender.sent == []  # not yet due
 
 
