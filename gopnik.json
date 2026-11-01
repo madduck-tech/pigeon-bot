@@ -1,0 +1,19 @@
+{
+  "//": "Every command in stage1 was run once, in this project, before being written here.",
+  "//verification": "The one thing this repository cannot work out for you: what checks this project has, and where the change stops being under your control once it ships. artifact_kind: service | library | cli | chart | migration | model-boundary | plugin.",
+  "verification": {
+    "stage1": [
+      ".venv/bin/ruff check .",
+      ".venv/bin/pytest"
+    ],
+    "stage2": [],
+    "notes": "stage2 is still empty. Put here what proves it works where it really runs: run it where it actually runs and drive one real request through it.",
+    "//stage2_unreachable": "Only if there is genuinely nowhere to deploy. Set it to WHY, and every verdict narrows to Stage 1 and quotes that reason. Leaving it blank is rejected: a narrowed verdict that cannot say why is the gap this key exists to make visible.",
+    "//stage2_unreachable_example": "no dev cluster; this is an internal script run by hand",
+    "artifact_kind": "service",
+    "surfaces": [
+      "Telegram bot"
+    ]
+  },
+  "language": "en"
+}
