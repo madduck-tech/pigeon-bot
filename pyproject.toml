@@ -10,11 +10,13 @@ requires-python = ">=3.12"
 dependencies = [
     "aiogram>=3.13,<4",
     "pydantic-settings>=2.6,<3",
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3,<9",
+    "pytest-asyncio>=0.24,<2",
     "ruff>=0.7,<1",
 ]
 
@@ -25,6 +27,7 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-q"
+asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100

@@ -30,7 +30,7 @@ def test_arrive_requires_setup(store, clock) -> None:
 
 
 def test_arrive_opens_event_and_refuses_second_while_sitting(store, clock) -> None:
-    store.enable_chat(CHAT, T0)
+    store.enable_chat(CHAT, T0, "UTC")
     event = game.arrive(store, clock, CHAT)
     assert event is not None
     assert event.status == "open"
@@ -39,7 +39,7 @@ def test_arrive_opens_event_and_refuses_second_while_sitting(store, clock) -> No
 
 
 def test_hit_counts_once_per_user_and_scores_one_point(store, clock) -> None:
-    store.enable_chat(CHAT, T0)
+    store.enable_chat(CHAT, T0, "UTC")
     event = game.arrive(store, clock, CHAT)
     assert game.hit(store, clock, CHAT, event.id, 1, "Anna") is HitOutcome.HIT
     assert game.hit(store, clock, CHAT, event.id, 1, "Anna") is HitOutcome.ALREADY
@@ -49,7 +49,7 @@ def test_hit_counts_once_per_user_and_scores_one_point(store, clock) -> None:
 
 
 def test_hit_after_window_closes_event(store, clock) -> None:
-    store.enable_chat(CHAT, T0)
+    store.enable_chat(CHAT, T0, "UTC")
     event = game.arrive(store, clock, CHAT)
     clock.set(event.closes_at + timedelta(seconds=1))
     assert game.hit(store, clock, CHAT, event.id, 1, "Anna") is HitOutcome.CLOSED
@@ -58,7 +58,7 @@ def test_hit_after_window_closes_event(store, clock) -> None:
 
 
 def test_new_arrival_allowed_after_previous_window(store, clock) -> None:
-    store.enable_chat(CHAT, T0)
+    store.enable_chat(CHAT, T0, "UTC")
     first = game.arrive(store, clock, CHAT)
     clock.set(first.closes_at)
     second = game.arrive(store, clock, CHAT)
@@ -67,16 +67,16 @@ def test_new_arrival_allowed_after_previous_window(store, clock) -> None:
 
 
 def test_hit_on_other_chats_event_is_rejected(store, clock) -> None:
-    store.enable_chat(CHAT, T0)
-    store.enable_chat(OTHER_CHAT, T0)
+    store.enable_chat(CHAT, T0, "UTC")
+    store.enable_chat(OTHER_CHAT, T0, "UTC")
     event = game.arrive(store, clock, CHAT)
     assert game.hit(store, clock, OTHER_CHAT, event.id, 1, "Anna") is HitOutcome.NO_EVENT
     assert store.leaderboard(OTHER_CHAT) == []
 
 
 def test_leaderboard_is_scoped_per_chat(store, clock) -> None:
-    store.enable_chat(CHAT, T0)
-    store.enable_chat(OTHER_CHAT, T0)
+    store.enable_chat(CHAT, T0, "UTC")
+    store.enable_chat(OTHER_CHAT, T0, "UTC")
     event = game.arrive(store, clock, CHAT)
     game.hit(store, clock, CHAT, event.id, 1, "Anna")
     assert store.leaderboard(OTHER_CHAT) == []

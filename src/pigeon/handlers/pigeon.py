@@ -1,24 +1,31 @@
-"""Telegram handlers for M1: /pigeon commands and the hit button. Thin: logic lives in services."""
+"""Telegram handlers: /pigeon commands and the hit button. Thin: logic lives in services."""
 
 from __future__ import annotations
+
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, Message
 
 from pigeon.clock import Clock
 from pigeon.render import texts
 from pigeon.repo.store import Store
 from pigeon.services import game
+from pigeon.telegram.messages import TelegramArrivalSender, pluck_keyboard
 
 GROUP_TYPES = {"group", "supergroup"}
 ADMIN_STATUSES = {"creator", "administrator"}
+DEFAULT_TIMEZONE = "UTC"
 
 
-def _pluck_keyboard(event_id: int) -> InlineKeyboardMarkup:
-    button = InlineKeyboardButton(text=texts.PLUCK_BUTTON, callback_data=f"pg:hit:{event_id}")
-    return InlineKeyboardMarkup(inline_keyboard=[[button]])
+def _valid_timezone(name: str) -> bool:
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return False
+    return True
 
 
 def build_router(store: Store, clock: Clock) -> Router:
@@ -34,41 +41,44 @@ def build_router(store: Store, clock: Clock) -> Router:
             await message.answer(texts.NOT_GROUP)
             return
         chat_id = message.chat.id
-        arg = (command.args or "").strip().lower()
+        parts = (command.args or "").split()
+        sub = parts[0].lower() if parts else ""
 
-        if arg == "help":
+        if sub == "help":
             await message.answer(texts.HELP)
             return
 
-        if arg == "setup":
+        if sub == "setup":
             if not await is_admin(message):
                 await message.answer(texts.ADMIN_ONLY)
                 return
-            store.enable_chat(chat_id, clock.now())
-            await message.answer(texts.SETUP_DONE)
+            tz = parts[1] if len(parts) > 1 else DEFAULT_TIMEZONE
+            if not _valid_timezone(tz):
+                await message.answer(texts.TZ_BAD)
+                return
+            store.enable_chat(chat_id, clock.now(), tz)
+            await message.answer(texts.SETUP_DONE.format(tz=tz))
             return
 
         if not store.is_enabled(chat_id):
             await message.answer(texts.NOT_ENABLED)
             return
 
-        if arg == "stats":
+        if sub == "stats":
             rows = store.leaderboard(chat_id)
             await message.answer(texts.stats(rows) if rows else texts.NO_STATS)
             return
 
-        if arg == "arrive":
+        if sub == "arrive":
             if not await is_admin(message):
                 await message.answer(texts.ADMIN_ONLY)
                 return
-            event = game.arrive(store, clock, chat_id)
+            event = game.arrive(store, clock, chat_id, source="manual")
             if event is None:
                 await message.answer(texts.ALREADY_SITTING)
                 return
-            sent = await message.answer(
-                texts.ARRIVAL.format(count=0), reply_markup=_pluck_keyboard(event.id)
-            )
-            store.set_event_message(event.id, sent.message_id)
+            message_id = await TelegramArrivalSender(message.bot).send_arrival(chat_id, event)
+            store.set_event_message(event.id, message_id)
             return
 
         current = store.current_open_event(chat_id)
@@ -108,7 +118,7 @@ async def _refresh_arrival(callback: CallbackQuery, store: Store, event_id: int)
     count = store.hit_count(event_id)
     try:
         await message.edit_text(
-            texts.ARRIVAL.format(count=count), reply_markup=_pluck_keyboard(event_id)
+            texts.ARRIVAL.format(count=count), reply_markup=pluck_keyboard(event_id)
         )
     except TelegramBadRequest as exc:
         if "message is not modified" not in str(exc):

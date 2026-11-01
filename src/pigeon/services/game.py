@@ -23,8 +23,12 @@ class HitOutcome(Enum):
     NO_EVENT = "no_event"
 
 
-def arrive(store: Store, clock: Clock, chat_id: int) -> Event | None:
-    """Open a new arrival. Returns None if the pigeon is already sitting in this chat."""
+def arrive(store: Store, clock: Clock, chat_id: int, source: str = "manual") -> Event | None:
+    """Open a new arrival. Returns None if the pigeon is already sitting in this chat.
+
+    source is 'manual' (an admin ran /pigeon arrive) or 'auto' (the scheduler planned it).
+    Only 'auto' arrivals count against the spontaneous-message budget.
+    """
     if not store.is_enabled(chat_id):
         raise NotEnabled(chat_id)
     now = clock.now()
@@ -33,7 +37,7 @@ def arrive(store: Store, clock: Clock, chat_id: int) -> Event | None:
         if now < current.closes_at:
             return None
         store.close_event(current.id)
-    event_id = store.open_event(chat_id, now, now + ARRIVAL_WINDOW)
+    event_id = store.open_event(chat_id, now, now + ARRIVAL_WINDOW, source=source)
     event = store.get_event(event_id)
     assert event is not None
     return event
