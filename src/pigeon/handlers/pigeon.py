@@ -12,8 +12,8 @@ from aiogram.types import CallbackQuery, Message
 from pigeon.clock import Clock
 from pigeon.render import texts
 from pigeon.repo.store import Store, minute_key
-from pigeon.services import game
-from pigeon.telegram.messages import TelegramArrivalSender, pluck_keyboard
+from pigeon.services import bets, darts, game
+from pigeon.telegram.messages import TelegramArrivalSender, arrival_keyboard
 
 GROUP_TYPES = {"group", "supergroup"}
 ADMIN_STATUSES = {"creator", "administrator"}
@@ -120,6 +120,60 @@ def build_router(store: Store, clock: Clock) -> Router:
         else:
             await callback.answer(texts.HIT_NO_EVENT)
 
+    @router.callback_query(F.data.startswith("pg:dart:"))
+    async def dart_callback(callback: CallbackQuery) -> None:
+        if callback.message is None or callback.data is None:
+            await callback.answer()
+            return
+        chat_id = callback.message.chat.id
+        event_id = int(callback.data.rsplit(":", 1)[1])
+        user_id = callback.from_user.id
+        outcome = darts.check(store, clock, chat_id, event_id, user_id)
+        if outcome is darts.DartOutcome.ALREADY_TODAY:
+            await callback.answer(texts.DART_ALREADY)
+            return
+        if outcome is darts.DartOutcome.CLOSED:
+            await callback.answer(texts.DART_CLOSED)
+            return
+        if outcome is darts.DartOutcome.NO_EVENT:
+            await callback.answer(texts.HIT_NO_EVENT)
+            return
+        await callback.answer()
+        throw = await callback.message.answer_dice(emoji="🎯")
+        value = throw.dice.value
+        points = darts.record(
+            store, clock, chat_id, event_id, user_id, callback.from_user.full_name, value
+        )
+        if points is None:
+            await throw.reply(texts.DART_ALREADY)
+            return
+        await throw.reply(texts.DART_RESULT.format(value=value, points=points))
+
+    @router.callback_query(F.data.startswith("pg:bet:"))
+    async def bet_callback(callback: CallbackQuery) -> None:
+        if callback.message is None or callback.data is None:
+            await callback.answer()
+            return
+        chat_id = callback.message.chat.id
+        _, _, event_part, choice = callback.data.split(":")
+        outcome = bets.place(
+            store,
+            clock,
+            chat_id,
+            int(event_part),
+            callback.from_user.id,
+            callback.from_user.full_name,
+            choice,
+        )
+        replies = {
+            bets.BetOutcome.PLACED: texts.BET_PLACED.format(choice=texts.BET_CHOICE[choice]),
+            bets.BetOutcome.ALREADY: texts.BET_ALREADY,
+            bets.BetOutcome.CLOSED: texts.BET_CLOSED,
+            bets.BetOutcome.NO_BALANCE: texts.BET_NO_BALANCE,
+            bets.BetOutcome.NO_EVENT: texts.HIT_NO_EVENT,
+        }
+        await callback.answer(replies[outcome])
+
     @router.message(F.chat.type.in_(GROUP_TYPES))
     async def count_group_message(message: Message) -> None:
         # Live-chat check: only a per-minute count is kept, never the message text.
@@ -146,7 +200,7 @@ async def _refresh_arrival(callback: CallbackQuery, store: Store, event_id: int)
     count = store.hit_count(event_id)
     try:
         await message.edit_text(
-            texts.ARRIVAL.format(count=count), reply_markup=pluck_keyboard(event_id)
+            texts.ARRIVAL.format(count=count), reply_markup=arrival_keyboard(event_id)
         )
     except TelegramBadRequest as exc:
         if "message is not modified" not in str(exc):

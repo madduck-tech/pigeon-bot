@@ -11,9 +11,23 @@ from pigeon.render import texts
 from pigeon.repo.store import Event
 
 
-def pluck_keyboard(event_id: int) -> InlineKeyboardMarkup:
-    button = InlineKeyboardButton(text=texts.PLUCK_BUTTON, callback_data=f"pg:hit:{event_id}")
-    return InlineKeyboardMarkup(inline_keyboard=[[button]])
+def arrival_keyboard(event_id: int) -> InlineKeyboardMarkup:
+    def button(text: str, action: str) -> InlineKeyboardButton:
+        return InlineKeyboardButton(text=text, callback_data=f"pg:{action}:{event_id}")
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [button(texts.PLUCK_BUTTON, "hit"), button(texts.DART_BUTTON, "dart")],
+            [
+                InlineKeyboardButton(
+                    text=texts.BET_GE3_BUTTON, callback_data=f"pg:bet:{event_id}:ge3"
+                ),
+                InlineKeyboardButton(
+                    text=texts.BET_LT3_BUTTON, callback_data=f"pg:bet:{event_id}:lt3"
+                ),
+            ],
+        ]
+    )
 
 
 class TelegramArrivalSender:
@@ -26,7 +40,7 @@ class TelegramArrivalSender:
         sent = await self._bot.send_message(
             chat_id,
             texts.ARRIVAL.format(count=0),
-            reply_markup=pluck_keyboard(event.id),
+            reply_markup=arrival_keyboard(event.id),
         )
         return sent.message_id
 

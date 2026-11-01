@@ -64,6 +64,23 @@ CREATE TABLE IF NOT EXISTS trophy (
     holder_name    TEXT NOT NULL,
     since          TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS dart_throws (
+    chat_id     INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL,
+    local_day   TEXT NOT NULL,
+    event_id    INTEGER NOT NULL,
+    dice_value  INTEGER NOT NULL,
+    points      INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, user_id, local_day)
+);
+CREATE TABLE IF NOT EXISTS bets (
+    event_id   INTEGER NOT NULL REFERENCES events (id),
+    chat_id    INTEGER NOT NULL,
+    user_id    INTEGER NOT NULL,
+    choice     TEXT NOT NULL CHECK (choice IN ('ge3', 'lt3')),
+    status     TEXT NOT NULL CHECK (status IN ('open', 'won', 'lost')),
+    PRIMARY KEY (event_id, user_id)
+);
 -- Message counts per minute. No text is stored, only how many messages arrived.
 CREATE TABLE IF NOT EXISTS message_minutes (
     chat_id INTEGER NOT NULL,
@@ -393,6 +410,95 @@ class Store:
                 (chat_id, user_id, points, event_id, _ts(now)),
             )
         return True
+
+    def add_points(
+        self, chat_id: int, user_id: int, delta: int, reason: str, ref_id: int | None, now: datetime
+    ) -> None:
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO points_ledger (chat_id, user_id, delta, reason, ref_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (chat_id, user_id, delta, reason, ref_id, _ts(now)),
+            )
+
+    def balance(self, chat_id: int, user_id: int) -> int:
+        row = self._conn.execute(
+            "SELECT COALESCE(SUM(delta), 0) AS n FROM points_ledger "
+            "WHERE chat_id = ? AND user_id = ?",
+            (chat_id, user_id),
+        ).fetchone()
+        return int(row["n"])
+
+    # darts: one throw per user per local day
+    def record_dart(
+        self,
+        chat_id: int,
+        user_id: int,
+        local_day: str,
+        event_id: int,
+        dice_value: int,
+        points: int,
+        now: datetime,
+    ) -> bool:
+        """Store the throw and its points together. False if the user already threw today."""
+        with self._conn:
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO dart_throws "
+                "(chat_id, user_id, local_day, event_id, dice_value, points) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (chat_id, user_id, local_day, event_id, dice_value, points),
+            )
+            if cur.rowcount == 0:
+                return False
+            if points:
+                self._conn.execute(
+                    "INSERT INTO points_ledger "
+                    "(chat_id, user_id, delta, reason, ref_id, created_at) "
+                    "VALUES (?, ?, ?, 'dart', ?, ?)",
+                    (chat_id, user_id, points, event_id, _ts(now)),
+                )
+        return True
+
+    def has_thrown_today(self, chat_id: int, user_id: int, local_day: str) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM dart_throws WHERE chat_id = ? AND user_id = ? AND local_day = ?",
+            (chat_id, user_id, local_day),
+        ).fetchone()
+        return row is not None
+
+    # bets: a fixed stake on one event, settled when the event closes
+    def place_bet(
+        self, chat_id: int, event_id: int, user_id: int, choice: str, stake: int, now: datetime
+    ) -> bool:
+        """Record the bet and take the stake together. False if the user already bet here."""
+        with self._conn:
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO bets (event_id, chat_id, user_id, choice, status) "
+                "VALUES (?, ?, ?, ?, 'open')",
+                (event_id, chat_id, user_id, choice),
+            )
+            if cur.rowcount == 0:
+                return False
+            self._conn.execute(
+                "INSERT INTO points_ledger (chat_id, user_id, delta, reason, ref_id, created_at) "
+                "VALUES (?, ?, ?, 'bet_stake', ?, ?)",
+                (chat_id, user_id, -stake, event_id, _ts(now)),
+            )
+        return True
+
+    def open_bets(self, event_id: int) -> list[tuple[int, str]]:
+        rows = self._conn.execute(
+            "SELECT user_id, choice FROM bets WHERE event_id = ? AND status = 'open'",
+            (event_id,),
+        ).fetchall()
+        return [(row["user_id"], row["choice"]) for row in rows]
+
+    def set_bet_status(self, event_id: int, user_id: int, status: str) -> None:
+        with self._conn:
+            self._conn.execute(
+                "UPDATE bets SET status = ? WHERE event_id = ? AND user_id = ?",
+                (status, event_id, user_id),
+            )
 
     def leaderboard(
         self, chat_id: int, limit: int = 10, since: datetime | None = None

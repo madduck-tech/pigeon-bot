@@ -68,8 +68,7 @@ async def _tick_chat(
     # 1. Close an arrival whose window has passed, and mark its message as flown.
     event = store.current_open_event(chat_id)
     if event is not None and now >= event.closes_at:
-        store.close_event(event.id)
-        store.mark_dashboard_dirty(chat_id)
+        game.close_event(store, clock, event)
         if event.message_id is not None:
             await sender.mark_flown(chat_id, event.message_id, store.hit_count(event.id))
         event = None
