@@ -12,7 +12,7 @@ from pigeon.content import Content
 from pigeon.render import texts
 from pigeon.repo.store import Event, Store
 
-ARRIVAL_WINDOW = timedelta(minutes=60)
+ARRIVAL_WINDOW = timedelta(minutes=15)
 HIT_POINTS = 1
 
 
