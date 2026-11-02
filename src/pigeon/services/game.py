@@ -7,7 +7,7 @@ from enum import Enum
 
 from pigeon.clock import Clock
 from pigeon.repo.store import Event, Store
-from pigeon.services import bets
+from pigeon.services import bets, quests
 
 ARRIVAL_WINDOW = timedelta(minutes=60)
 HIT_POINTS = 1
@@ -91,5 +91,8 @@ def hit(
         return HitOutcome.ALREADY
     if store.hit_count(event.id) == 1:
         store.set_trophy(chat_id, user_id, name, now)
+    chat = store.get_chat(chat_id)
+    assert chat is not None
+    quests.after_hit(store, clock, chat)
     store.mark_dashboard_dirty(chat_id)
     return HitOutcome.HIT

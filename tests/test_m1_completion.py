@@ -1,6 +1,5 @@
 """M1 completion: trophy, dashboard, quiet hours, live-chat postponement, message counter."""
 
-import random
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -13,6 +12,7 @@ from pigeon.render import texts
 from pigeon.repo.store import Store, minute_key
 from pigeon.scheduler import arrivals
 from pigeon.services import game
+from rigged import EveryDay
 
 CHAT = -3001
 TZ = "Europe/Moscow"  # UTC+3, no DST
@@ -114,7 +114,7 @@ async def test_tick_flushes_dirty_dashboards(store, clock) -> None:
     async def refresh(chat_id: int) -> None:
         refreshed.append(chat_id)
 
-    await arrivals.tick(store, clock, random.Random(1), FakeSender(), refresh)
+    await arrivals.tick(store, clock, EveryDay(1), FakeSender(), refresh)
     assert refreshed == [CHAT]
 
 
@@ -133,12 +133,13 @@ def test_quiet_bounds_parsing() -> None:
     assert _quiet_bounds(["25", "9"]) is None
     assert _quiet_bounds(["23"]) is None
     assert _quiet_bounds(["x", "9"]) is None
+    assert _quiet_bounds(["²", "¹"]) is None  # isdigit() accepts these, int() does not
 
 
 async def test_custom_quiet_hours_move_the_plan_window(store, clock) -> None:
     _enable(store)
     store.set_quiet_hours(CHAT, 20, 8)  # daytime window becomes 08:00-20:00
-    await arrivals.tick(store, clock, random.Random(3), FakeSender())
+    await arrivals.tick(store, clock, EveryDay(3), FakeSender())
     plan = store.get_plan(CHAT, "2026-11-02")
     local = plan.planned_at.astimezone(ZoneInfo(TZ))
     assert 8 <= local.hour < 20
@@ -155,7 +156,7 @@ def test_plan_window_respects_quiet_hours() -> None:
 
 async def test_busy_chat_postpones_then_skips(store, clock) -> None:
     _enable(store)
-    await arrivals.tick(store, clock, random.Random(5), FakeSender())
+    await arrivals.tick(store, clock, EveryDay(5), FakeSender())
     plan = store.get_plan(CHAT, "2026-11-02")
     sender = FakeSender()
 
@@ -164,7 +165,7 @@ async def test_busy_chat_postpones_then_skips(store, clock) -> None:
     for _ in range(limits.LIVE_THRESHOLD):
         store.record_message(CHAT, minute_key(clock.now()))
 
-    await arrivals.tick(store, clock, random.Random(5), sender)
+    await arrivals.tick(store, clock, EveryDay(5), sender)
     assert sender.sent == []
     postponed = store.get_plan(CHAT, "2026-11-02")
     assert postponed.status == "pending" and postponed.postpones == 1
@@ -173,13 +174,13 @@ async def test_busy_chat_postpones_then_skips(store, clock) -> None:
     clock.set(postponed.planned_at)
     for _ in range(limits.LIVE_THRESHOLD):
         store.record_message(CHAT, minute_key(clock.now()))
-    await arrivals.tick(store, clock, random.Random(5), sender)
+    await arrivals.tick(store, clock, EveryDay(5), sender)
     assert store.get_plan(CHAT, "2026-11-02").postpones == 2
 
     clock.set(store.get_plan(CHAT, "2026-11-02").planned_at)
     for _ in range(limits.LIVE_THRESHOLD):
         store.record_message(CHAT, minute_key(clock.now()))
-    await arrivals.tick(store, clock, random.Random(5), sender)
+    await arrivals.tick(store, clock, EveryDay(5), sender)
     assert store.get_plan(CHAT, "2026-11-02").status == "skipped"
     assert sender.sent == []
 

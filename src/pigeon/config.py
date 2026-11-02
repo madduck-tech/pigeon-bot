@@ -14,4 +14,5 @@ class Settings(BaseSettings):
 
     bot_token: SecretStr | None = None
     db_path: Path = Path("./data/pigeon.db")
+    content_dir: Path = Path("./content")
     log_level: str = "INFO"

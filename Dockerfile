@@ -5,12 +5,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIGEON_DB_PATH=/data/pigeon.db
+    PIGEON_DB_PATH=/data/pigeon.db \
+    PIGEON_CONTENT_DIR=/app/content
 
 WORKDIR /app
 
 COPY pyproject.toml ./
 COPY src ./src
+COPY content ./content
 RUN pip install .
 
 RUN useradd --create-home --uid 10001 bot \

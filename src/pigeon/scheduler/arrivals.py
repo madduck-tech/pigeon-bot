@@ -1,4 +1,4 @@
-"""Automatic arrivals: one planned arrival per chat per local day, inside the daytime window.
+"""Automatic arrivals: at most one per chat per local day, on random days of the week.
 
 Restart-safe: the plan lives in the database. Each tick re-reads it, so a restart never
 double-fires and never loses a day's plan.
@@ -12,6 +12,8 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
+
+from aiogram.exceptions import TelegramMigrateToChat
 
 from pigeon.budget import limits
 from pigeon.clock import Clock
@@ -38,7 +40,7 @@ def _plan_today(
 ) -> ArrivalPlan:
     local_date = local_now.date().isoformat()
     tz = local_now.tzinfo
-    if not limits.can_plan_auto(store, chat.chat_id, local_now):
+    if not limits.flies_today(store, rng, chat.chat_id, local_now):
         store.save_plan(chat.chat_id, local_date, None, "skipped")
         return ArrivalPlan(chat.chat_id, local_date, None, "skipped")
 
@@ -80,6 +82,10 @@ async def _tick_chat(
     # 3. Fire the plan when its time has come.
     if plan.status != "pending" or plan.planned_at is None or now < plan.planned_at:
         return
+    # A plan that comes due in quiet hours (after a restart) or during a pause is dropped.
+    if not limits.can_publish(chat, now):
+        store.save_plan(chat_id, local_date, plan.planned_at, "skipped")
+        return
     # A manual arrival in progress blocks the planned one for the day.
     if event is not None:
         store.save_plan(chat_id, local_date, plan.planned_at, "skipped")
@@ -105,9 +111,12 @@ async def _tick_chat(
     try:
         message_id = await sender.send_arrival(chat_id, arrival)
     except Exception:
-        store.close_event(arrival.id)
-        raise
-    store.set_event_message(arrival.id, message_id)
+        # Nobody saw it, so it must not count as an arrival. The plan stays and retries.
+        if store.delete_unsent_event(chat_id, arrival.id):
+            raise
+        log.warning("chat %s: arrival %s was delivered, response lost", chat_id, arrival.id)
+    else:
+        store.set_event_message(arrival.id, message_id)
     store.save_plan(chat_id, local_date, plan.planned_at, "fired")
     log.info("chat %s: automatic arrival %s", chat_id, arrival.id)
 
@@ -123,6 +132,10 @@ async def tick(
     for chat in store.enabled_chats():
         try:
             await _tick_chat(store, clock, rng, sender, chat)
+        except TelegramMigrateToChat as exc:
+            # Safety net for a migration whose service message the bot never received.
+            log.warning("chat %s moved to %s", chat.chat_id, exc.migrate_to_chat_id)
+            store.migrate_chat(chat.chat_id, exc.migrate_to_chat_id)
         except Exception:
             log.exception("chat %s: scheduler tick failed", chat.chat_id)
     if refresh_dashboard is None:
@@ -130,5 +143,8 @@ async def tick(
     for chat_id in store.dirty_dashboard_chats():
         try:
             await refresh_dashboard(chat_id)
+        except TelegramMigrateToChat as exc:
+            log.warning("chat %s moved to %s", chat_id, exc.migrate_to_chat_id)
+            store.migrate_chat(chat_id, exc.migrate_to_chat_id)
         except Exception:
             log.exception("chat %s: dashboard refresh failed", chat_id)

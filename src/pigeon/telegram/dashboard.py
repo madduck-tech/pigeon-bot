@@ -17,6 +17,7 @@ from pigeon.budget import limits
 from pigeon.clock import Clock
 from pigeon.render import texts
 from pigeon.repo.store import Store
+from pigeon.services import quests
 
 log = logging.getLogger("pigeon.dashboard")
 
@@ -34,12 +35,16 @@ def build_text(store: Store, clock: Clock, chat_id: int) -> str:
     holder = trophy.holder_name if trophy else None
     holder_days = (now - trophy.since).days if trophy else 0
     top = store.leaderboard(chat_id, limit=TOP_SIZE, since=limits.local_week_start_utc(local_now))
+    pigeon = store.get_pigeon(chat_id)
     return texts.dashboard(
         arrivals=store.arrivals_total(chat_id),
         sitting=sitting,
         holder=holder,
         holder_days=holder_days,
         top=top,
+        name=pigeon.name or texts.PIGEON_NAME,
+        title=pigeon.title,
+        quest=quests.progress(store, chat, now),
     )
 
 
@@ -58,9 +63,13 @@ async def refresh_dashboard(bot: Bot, store: Store, clock: Clock, chat_id: int) 
                 pass
             elif "message to edit not found" in reason or "message can't be edited" in reason:
                 message_id = None
+                store.set_dashboard_message(chat_id, None)
             else:
                 raise
     if message_id is None:
+        # A new message is a post, unlike an edit. The chat stays dirty and is retried later.
+        if not limits.can_publish(chat, clock.now()):
+            return
         sent = await bot.send_message(chat_id, text)
         store.set_dashboard_message(chat_id, sent.message_id)
         try:

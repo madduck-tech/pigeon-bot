@@ -1,4 +1,3 @@
-import random
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -7,6 +6,8 @@ import pytest
 from pigeon.clock import FixedClock
 from pigeon.repo.store import Store
 from pigeon.scheduler import arrivals
+from pigeon.services import bets
+from rigged import EveryDay
 
 CHAT = -2001
 TZ = "Europe/Moscow"  # UTC+3, no DST
@@ -52,7 +53,7 @@ def _enable(store: Store, chat_id: int = CHAT, tz: str = TZ) -> None:
 
 
 async def _run(store, clock, sender, rng=None):
-    await arrivals.tick(store, clock, rng or random.Random(7), sender)
+    await arrivals.tick(store, clock, rng or EveryDay(7), sender)
 
 
 async def test_nothing_happens_for_chats_not_set_up(store, clock, sender) -> None:
@@ -162,3 +163,71 @@ async def test_failure_in_one_chat_does_not_stop_others(store, clock, sender) ->
     await _run(store, clock, sender)
     assert [chat for chat, _ in sender.sent] == [other]
     assert store.current_open_event(CHAT) is None  # the failed arrival was closed again
+
+
+async def test_send_to_a_migrated_chat_moves_it(store, clock, sender) -> None:
+    from aiogram.exceptions import TelegramMigrateToChat
+    from aiogram.methods import SendMessage
+
+    _enable(store)
+    new_chat = -100999
+
+    class MigratedSender(FakeSender):
+        async def send_arrival(self, chat_id, event) -> int:
+            method = SendMessage(chat_id=chat_id, text="x")
+            raise TelegramMigrateToChat(method, "upgraded", new_chat)
+
+    await _run(store, clock, sender)
+    plan = store.get_plan(CHAT, "2026-11-02")
+    clock.set(plan.planned_at)
+    await _run(store, clock, MigratedSender())
+    assert store.get_chat(CHAT) is None
+    assert store.is_enabled(new_chat)
+
+    # The moved plan is still pending, so the arrival goes out at the new id.
+    await _run(store, clock, sender)
+    assert [chat_id for chat_id, _ in sender.sent] == [new_chat]
+
+
+async def test_failed_sends_leave_no_phantom_arrivals(store, clock, sender) -> None:
+    # Regression: each failed tick left a closed event that ate the budget and the streaks.
+    _enable(store)
+    await _run(store, clock, sender)
+    plan = store.get_plan(CHAT, "2026-11-02")
+    clock.set(plan.planned_at)
+    sender.fail_for.add(CHAT)
+    for _ in range(5):
+        await _run(store, clock, sender)
+    assert store.arrivals_total(CHAT) == 0
+    assert store.get_pigeon(CHAT).born_at is None
+    assert store.get_plan(CHAT, "2026-11-02").status == "pending"
+
+    sender.fail_for.clear()
+    await _run(store, clock, sender)
+    assert store.arrivals_total(CHAT) == 1
+    assert store.get_plan(CHAT, "2026-11-02").status == "fired"
+
+
+async def test_delivered_arrival_with_a_lost_response_is_kept(store, clock, sender) -> None:
+    # Regression: people tapped it during the send, and a timeout deleted the event under them,
+    # leaving a bet that was never settled and a second arrival message.
+    _enable(store)
+    await _run(store, clock, sender)
+    plan = store.get_plan(CHAT, "2026-11-02")
+    clock.set(plan.planned_at)
+
+    class TappedThenTimedOut(FakeSender):
+        async def send_arrival(self, chat_id, event) -> int:
+            store.add_points(chat_id, 2, 5, "seed", None, clock.now())
+            assert bets.place(store, clock, chat_id, event.id, 2, "Boris", "ge3").value == "placed"
+            raise TimeoutError
+
+    await _run(store, clock, TappedThenTimedOut())
+    event = store.current_open_event(CHAT)
+    assert event is not None and event.message_id is None
+    assert store.get_plan(CHAT, "2026-11-02").status == "fired"
+
+    clock.set(event.closes_at)
+    await _run(store, clock, sender)
+    assert store.open_bets(event.id) == []
+    assert sender.sent == []
