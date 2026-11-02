@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import random
-from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
@@ -17,12 +16,11 @@ from aiogram.exceptions import TelegramMigrateToChat
 
 from pigeon.budget import limits
 from pigeon.clock import Clock
+from pigeon.content import Content
 from pigeon.repo.store import ArrivalPlan, ChatSettings, Event, Store
-from pigeon.services import game
+from pigeon.services import achievements, game
 
 log = logging.getLogger("pigeon.scheduler")
-
-RefreshDashboard = Callable[[int], Awaitable[None]]
 
 
 class ArrivalSender(Protocol):
@@ -30,8 +28,8 @@ class ArrivalSender(Protocol):
         """Post an arrival message and return its message_id."""
         ...
 
-    async def mark_flown(self, chat_id: int, message_id: int, count: int) -> None:
-        """Edit the arrival message to say the pigeon has flown away."""
+    async def mark_flown(self, chat_id: int, message_id: int, text: str) -> None:
+        """Replace the arrival message with this text and remove its buttons."""
         ...
 
 
@@ -61,6 +59,7 @@ async def _tick_chat(
     clock: Clock,
     rng: random.Random,
     sender: ArrivalSender,
+    content: Content,
     chat: ChatSettings,
 ) -> None:
     chat_id = chat.chat_id
@@ -70,14 +69,17 @@ async def _tick_chat(
     # 1. Close an arrival whose window has passed, and mark its message as flown.
     event = store.current_open_event(chat_id)
     if event is not None and now >= event.closes_at:
-        game.close_event(store, clock, event)
+        store.close_event(event.id)
         if event.message_id is not None:
-            await sender.mark_flown(chat_id, event.message_id, store.hit_count(event.id))
+            await sender.mark_flown(chat_id, event.message_id, game.flown_text(store, event))
         event = None
 
-    # 2. Make today's plan once.
+    # 2. Make today's plan once. The trophy is held with no events at all, so it is checked here.
     local_date = local_now.date().isoformat()
-    plan = store.get_plan(chat_id, local_date) or _plan_today(store, rng, chat, local_now)
+    plan = store.get_plan(chat_id, local_date)
+    if plan is None:
+        achievements.check_trophy_holders(store, chat_id, now)
+        plan = _plan_today(store, rng, chat, local_now)
 
     # 3. Fire the plan when its time has come.
     if plan.status != "pending" or plan.planned_at is None or now < plan.planned_at:
@@ -90,22 +92,8 @@ async def _tick_chat(
     if event is not None:
         store.save_plan(chat_id, local_date, plan.planned_at, "skipped")
         return
-    # A busy chat postpones the arrival, a limited number of times, then skips the day.
-    if limits.is_live_chat(store, chat_id, now):
-        _, window_end = limits.plan_window(local_now, chat.quiet_start, chat.quiet_end)
-        new_time = now + limits.POSTPONE
-        if (
-            plan.postpones >= limits.MAX_POSTPONES
-            or new_time.astimezone(local_now.tzinfo) >= window_end
-        ):
-            store.save_plan(chat_id, local_date, plan.planned_at, "skipped")
-            log.info("chat %s: busy, arrival skipped for the day", chat_id)
-        else:
-            store.postpone_plan(chat_id, local_date, new_time.astimezone(local_now.tzinfo))
-            log.info("chat %s: busy, arrival postponed", chat_id)
-        return
 
-    arrival = game.arrive(store, clock, chat_id, source="auto")
+    arrival = game.arrive(store, clock, chat_id, game.pick_visitor(rng, content), source="auto")
     if arrival is None:
         return
     try:
@@ -126,25 +114,15 @@ async def tick(
     clock: Clock,
     rng: random.Random,
     sender: ArrivalSender,
-    refresh_dashboard: RefreshDashboard | None = None,
+    content: Content,
 ) -> None:
     """Run one pass over every enabled chat. A failure in one chat does not stop the others."""
     for chat in store.enabled_chats():
         try:
-            await _tick_chat(store, clock, rng, sender, chat)
+            await _tick_chat(store, clock, rng, sender, content, chat)
         except TelegramMigrateToChat as exc:
             # Safety net for a migration whose service message the bot never received.
             log.warning("chat %s moved to %s", chat.chat_id, exc.migrate_to_chat_id)
             store.migrate_chat(chat.chat_id, exc.migrate_to_chat_id)
         except Exception:
             log.exception("chat %s: scheduler tick failed", chat.chat_id)
-    if refresh_dashboard is None:
-        return
-    for chat_id in store.dirty_dashboard_chats():
-        try:
-            await refresh_dashboard(chat_id)
-        except TelegramMigrateToChat as exc:
-            log.warning("chat %s moved to %s", chat_id, exc.migrate_to_chat_id)
-            store.migrate_chat(chat_id, exc.migrate_to_chat_id)
-        except Exception:
-            log.exception("chat %s: dashboard refresh failed", chat_id)

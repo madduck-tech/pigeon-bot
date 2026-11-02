@@ -1,0 +1,17 @@
+# Choices for /pigeon setup: button label -> IANA time zone.
+Калининград: Europe/Kaliningrad
+Москва: Europe/Moscow
+Самара: Europe/Samara
+Екатеринбург: Asia/Yekaterinburg
+Омск: Asia/Omsk
+Красноярск: Asia/Krasnoyarsk
+Иркутск: Asia/Irkutsk
+Якутск: Asia/Yakutsk
+Владивосток: Asia/Vladivostok
+Минск: Europe/Minsk
+Киев: Europe/Kyiv
+Алматы: Asia/Almaty
+Тбилиси: Asia/Tbilisi
+Белград: Europe/Belgrade
+Лондон: Europe/London
+UTC: UTC

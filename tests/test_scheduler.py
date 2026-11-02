@@ -6,8 +6,8 @@ import pytest
 from pigeon.clock import FixedClock
 from pigeon.repo.store import Store
 from pigeon.scheduler import arrivals
-from pigeon.services import bets
-from rigged import EveryDay
+from pigeon.services import achievements, game
+from rigged import CONTENT, EveryDay
 
 CHAT = -2001
 TZ = "Europe/Moscow"  # UTC+3, no DST
@@ -18,7 +18,7 @@ MORNING = datetime(2026, 11, 2, 5, 0, tzinfo=UTC)
 class FakeSender:
     def __init__(self) -> None:
         self.sent: list[tuple[int, int]] = []
-        self.flown: list[tuple[int, int, int]] = []
+        self.flown: list[tuple[int, int, str]] = []
         self.fail_for: set[int] = set()
 
     async def send_arrival(self, chat_id: int, event) -> int:
@@ -27,8 +27,8 @@ class FakeSender:
         self.sent.append((chat_id, event.id))
         return 1000 + len(self.sent)
 
-    async def mark_flown(self, chat_id: int, message_id: int, count: int) -> None:
-        self.flown.append((chat_id, message_id, count))
+    async def mark_flown(self, chat_id: int, message_id: int, text: str) -> None:
+        self.flown.append((chat_id, message_id, text))
 
 
 @pytest.fixture
@@ -53,7 +53,7 @@ def _enable(store: Store, chat_id: int = CHAT, tz: str = TZ) -> None:
 
 
 async def _run(store, clock, sender, rng=None):
-    await arrivals.tick(store, clock, rng or EveryDay(7), sender)
+    await arrivals.tick(store, clock, rng or EveryDay(7), sender, CONTENT)
 
 
 async def test_nothing_happens_for_chats_not_set_up(store, clock, sender) -> None:
@@ -105,7 +105,8 @@ async def test_expired_arrival_is_closed_and_marked_flown(store, clock, sender) 
     clock.set(event.closes_at)
     await _run(store, clock, sender)
     assert store.current_open_event(CHAT) is None
-    assert sender.flown == [(CHAT, 1001, 0)]
+    assert [flown[:2] for flown in sender.flown] == [(CHAT, 1001)]
+    assert "Улетел сам" in sender.flown[0][2]
 
 
 async def test_manual_arrival_in_progress_blocks_planned_one(store, clock, sender) -> None:
@@ -199,7 +200,6 @@ async def test_failed_sends_leave_no_phantom_arrivals(store, clock, sender) -> N
     for _ in range(5):
         await _run(store, clock, sender)
     assert store.arrivals_total(CHAT) == 0
-    assert store.get_pigeon(CHAT).born_at is None
     assert store.get_plan(CHAT, "2026-11-02").status == "pending"
 
     sender.fail_for.clear()
@@ -210,7 +210,7 @@ async def test_failed_sends_leave_no_phantom_arrivals(store, clock, sender) -> N
 
 async def test_delivered_arrival_with_a_lost_response_is_kept(store, clock, sender) -> None:
     # Regression: people tapped it during the send, and a timeout deleted the event under them,
-    # leaving a bet that was never settled and a second arrival message.
+    # leaving a second arrival message.
     _enable(store)
     await _run(store, clock, sender)
     plan = store.get_plan(CHAT, "2026-11-02")
@@ -218,8 +218,7 @@ async def test_delivered_arrival_with_a_lost_response_is_kept(store, clock, send
 
     class TappedThenTimedOut(FakeSender):
         async def send_arrival(self, chat_id, event) -> int:
-            store.add_points(chat_id, 2, 5, "seed", None, clock.now())
-            assert bets.place(store, clock, chat_id, event.id, 2, "Boris", "ge3").value == "placed"
+            assert game.hit(store, clock, chat_id, event.id, 2, "Boris") is game.HitOutcome.HIT
             raise TimeoutError
 
     await _run(store, clock, TappedThenTimedOut())
@@ -229,5 +228,26 @@ async def test_delivered_arrival_with_a_lost_response_is_kept(store, clock, send
 
     clock.set(event.closes_at)
     await _run(store, clock, sender)
-    assert store.open_bets(event.id) == []
+    assert store.current_open_event(CHAT) is None
     assert sender.sent == []
+
+
+async def test_each_arrival_gets_a_name_and_phrase_from_content(store, clock, sender) -> None:
+    _enable(store)
+    await _run(store, clock, sender)
+    clock.set(store.get_plan(CHAT, "2026-11-02").planned_at)
+    await _run(store, clock, sender)
+    event = store.current_open_event(CHAT)
+    assert event.pigeon_name in CONTENT.names
+    assert event.intro in CONTENT.arrivals
+
+
+async def test_daily_plan_grants_trophy_holder_with_no_events(store, clock, sender) -> None:
+    # The trophy is held with nothing happening in the chat, so a quiet week must still count.
+    _enable(store)
+    store.set_trophy(CHAT, 1, "Anna", MORNING)
+    await _run(store, clock, sender)
+    assert store.achievements_of(CHAT, 1) == []
+    clock.set(MORNING + achievements.TROPHY_HOLDER_TIME)
+    await _run(store, clock, sender)
+    assert store.achievements_of(CHAT, 1) == [achievements.TROPHY_HOLDER]

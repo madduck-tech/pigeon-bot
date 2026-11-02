@@ -1,4 +1,4 @@
-"""Pigeon row, trophy log, chat migration, and upgrades of databases made by older versions."""
+"""Trophy log, chat migration, and upgrades of databases made by older versions."""
 
 import sqlite3
 from datetime import UTC, datetime, timedelta, timezone
@@ -7,7 +7,7 @@ import pytest
 
 from pigeon.clock import FixedClock
 from pigeon.repo.store import SCHEMA, Store
-from pigeon.services import bets, game
+from pigeon.services import game
 
 CHAT = -1001
 NEW_CHAT = -100123
@@ -28,19 +28,6 @@ def clock():
     return FixedClock(NOW)
 
 
-def test_new_pigeon_is_not_born_until_the_first_arrival(store, clock) -> None:
-    assert store.get_pigeon(CHAT).born_at is None
-    game.arrive(store, clock, CHAT)
-    assert store.get_pigeon(CHAT).born_at == NOW
-
-
-def test_born_at_does_not_move_on_later_arrivals(store, clock) -> None:
-    first = game.arrive(store, clock, CHAT)
-    clock.set(first.closes_at + timedelta(days=1))
-    game.arrive(store, clock, CHAT)
-    assert store.get_pigeon(CHAT).born_at == NOW
-
-
 def test_trophy_time_adds_up_over_several_stretches(store) -> None:
     store.set_trophy(CHAT, 1, "Anna", NOW)
     store.set_trophy(CHAT, 2, "Boris", NOW + timedelta(days=3))
@@ -59,20 +46,17 @@ def test_keeping_the_trophy_does_not_split_the_log(store) -> None:
 def test_migration_moves_everything(store, clock) -> None:
     event = game.arrive(store, clock, CHAT)
     game.hit(store, clock, CHAT, event.id, 1, "Anna")
-    bets.place(store, clock, CHAT, event.id, 1, "Anna", "ge3")
-    store.award(CHAT, 1, "bullseye", NOW)
-    store.ensure_job(CHAT, "quest_close", NOW)
+    store.add_shoo(CHAT, event.id, 2, "кыш", "сидит", False, NOW)
+    store.award(CHAT, 1, "sniper", NOW)
 
     assert store.migrate_chat(CHAT, NEW_CHAT) is True
 
     assert store.get_chat(CHAT) is None
-    assert store.balance(NEW_CHAT, 1) == 0  # +1 hit, -1 stake
+    assert store.balance(NEW_CHAT, 1) == 1
     assert store.get_trophy(NEW_CHAT).holder_user_id == 1
     assert store.current_open_event(NEW_CHAT).id == event.id
-    assert store.achievements_of(NEW_CHAT, 1) == ["bullseye"]
-    assert store.pending_job(NEW_CHAT, "quest_close") is not None
-    assert store.get_pigeon(NEW_CHAT).born_at == NOW
-    assert NEW_CHAT in store.dirty_dashboard_chats()
+    assert store.achievements_of(NEW_CHAT, 1) == ["sniper"]
+    assert store.shoo_count(NEW_CHAT, event.id) == 1
 
 
 def test_migration_leaves_no_row_behind_in_any_table(store, clock, tmp_path) -> None:
@@ -157,9 +141,9 @@ def test_old_database_is_upgraded_on_startup(tmp_path) -> None:
     path = tmp_path / "old.db"
     _old_database(path)
     store = Store(path)
-    assert store.get_pigeon(CHAT).born_at == NOW
     assert store.trophy_held(CHAT, 1, NOW) == timedelta(days=3)
     assert store.get_chat(CHAT).paused_until is None
+    assert store.get_event(1).pigeon_name is None
     store.close()
 
 
@@ -185,47 +169,64 @@ def test_timestamps_compare_correctly_whatever_offset_they_arrive_in(store) -> N
     assert store.count_auto_events_since(CHAT, monday_start_utc) == 0
 
 
-def test_database_from_before_m3_gets_the_new_columns(tmp_path) -> None:
-    path = tmp_path / "old.db"
+def _database_before_the_dovecote(path) -> None:
+    """A database as the last version of the old bot left it."""
     old = sqlite3.connect(path)
     old.executescript(
-        "CREATE TABLE chats (chat_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0,"
-        " created_at TEXT NOT NULL);"
         "CREATE TABLE members (chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL,"
-        " display_name TEXT NOT NULL, PRIMARY KEY (chat_id, user_id));"
-        "INSERT INTO chats VALUES (-1, 1, '2026-01-01T00:00:00+00:00');"
-        "INSERT INTO members VALUES (-1, 5, 'Anna');"
+        " display_name TEXT NOT NULL, username TEXT, PRIMARY KEY (chat_id, user_id));"
+        "CREATE TABLE points_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, delta INTEGER NOT NULL,"
+        " reason TEXT NOT NULL, ref_id INTEGER, created_at TEXT NOT NULL);"
+        "CREATE TABLE achievements (chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL,"
+        " code TEXT NOT NULL, awarded_at TEXT NOT NULL, PRIMARY KEY (chat_id, user_id, code));"
+        "CREATE TABLE arrival_plans (chat_id INTEGER NOT NULL, local_date TEXT NOT NULL,"
+        " planned_at TEXT, status TEXT NOT NULL, postpones INTEGER NOT NULL DEFAULT 0,"
+        " PRIMARY KEY (chat_id, local_date));"
+        "CREATE TABLE duels (id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL);"
+        "INSERT INTO members VALUES (-1, 5, 'Anna', 'anna');"
+        "INSERT INTO points_ledger (chat_id, user_id, delta, reason, created_at)"
+        " VALUES (-1, 5, 7, 'dart', '2026-01-01T00:00:00+00:00');"
+        "INSERT INTO achievements VALUES (-1, 5, 'bullseye', '2026-01-01T00:00:00+00:00');"
+        "INSERT INTO duels VALUES (1, -1);"
     )
     old.close()
+
+
+def test_upgrade_resets_the_rating_and_forgets_usernames(tmp_path) -> None:
+    path = tmp_path / "old.db"
+    _database_before_the_dovecote(path)
     store = Store(path)
-    store.remember_member(-1, 5, "Anna", "anna")
-    assert store.member_by_username(-1, "ANNA") == 5
-    now = datetime(2026, 11, 2, tzinfo=UTC)
-    assert store.claim_photo_poll(-1, now, now)
+    assert store.balance(-1, 5) == 0
+    assert store.leaderboard(-1) == []
+    assert store.member_name(-1, 5) == "Anna"
+    assert store.achievements_of(-1, 5) == ["bullseye"]
+    store.save_plan(-1, "2026-11-02", NOW, "pending")  # the old table has a postpones column
+    store.close()
+    conn = sqlite3.connect(path)
+    assert conn.execute("SELECT username FROM members").fetchone()[0] is None
+    assert conn.execute("SELECT COUNT(*) FROM duels").fetchone()[0] == 1  # not dropped
+    conn.close()
+
+
+def test_rating_is_reset_only_once(tmp_path) -> None:
+    path = tmp_path / "old.db"
+    _database_before_the_dovecote(path)
+    store = Store(path)
+    store.add_hit(-1, 1, 5, NOW, 1)
+    store.close()
+    store = Store(path)
+    assert store.balance(-1, 5) == 1
     store.close()
 
 
-def test_username_follows_its_current_owner(tmp_path) -> None:
-    store = Store(tmp_path / "p.db")
-    store.remember_member(-1, 5, "Anna", "shared")
-    store.remember_member(-1, 6, "Boris", "Shared")
-    assert store.member_by_username(-1, "shared") == 6
-    store.remember_member(-1, 6, "Boris", None)
-    assert store.member_by_username(-1, "shared") is None
+def test_migration_moves_rows_of_tables_left_from_closed_mechanics(tmp_path) -> None:
+    path = tmp_path / "old.db"
+    _database_before_the_dovecote(path)
+    store = Store(path)
+    store.enable_chat(-1, NOW, TZ)
+    assert store.migrate_chat(-1, -2) is True
     store.close()
-
-
-def test_username_lookup_stays_inside_the_chat(tmp_path) -> None:
-    store = Store(tmp_path / "p.db")
-    store.remember_member(-1, 5, "Anna", "anna")
-    assert store.member_by_username(-2, "anna") is None
-    store.close()
-
-
-def test_playing_does_not_erase_a_known_username(tmp_path) -> None:
-    store = Store(tmp_path / "p.db")
-    store.remember_member(-1, 5, "Anna", "anna")
-    store.upsert_member(-1, 5, "Anna K")
-    assert store.member_by_username(-1, "anna") == 5
-    assert store.member_name(-1, 5) == "Anna K"
-    store.close()
+    conn = sqlite3.connect(path)
+    assert conn.execute("SELECT chat_id FROM duels").fetchone()[0] == -2
+    conn.close()

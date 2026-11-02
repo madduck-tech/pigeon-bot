@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import random
+from dataclasses import dataclass
 from datetime import timedelta
 from enum import Enum
 
 from pigeon.clock import Clock
+from pigeon.content import Content
+from pigeon.render import texts
 from pigeon.repo.store import Event, Store
-from pigeon.services import bets, quests
 
 ARRIVAL_WINDOW = timedelta(minutes=60)
 HIT_POINTS = 1
@@ -30,11 +33,36 @@ class EventState(Enum):
     NO_EVENT = "no_event"
 
 
-def close_event(store: Store, clock: Clock, event: Event) -> None:
-    """The one place an arrival is closed: settles its bets and refreshes the dashboard."""
-    store.close_event(event.id)
-    bets.settle(store, event.id, event.chat_id, store.hit_count(event.id), clock.now())
-    store.mark_dashboard_dirty(event.chat_id)
+@dataclass(frozen=True)
+class Visitor:
+    """The pigeon the dovecote releases: a name and the phrase it arrives with."""
+
+    name: str = texts.PIGEON_NAME
+    intro: str = texts.ARRIVAL_INTRO
+
+
+DEFAULT_VISITOR = Visitor()
+
+
+def pick_visitor(rng: random.Random, content: Content) -> Visitor:
+    return Visitor(rng.choice(content.names), rng.choice(content.arrivals))
+
+
+def arrival_text(store: Store, event: Event) -> str:
+    return texts.arrival(
+        event.pigeon_name or texts.PIGEON_NAME,
+        event.intro or texts.ARRIVAL_INTRO,
+        store.shoos_of(event.chat_id, event.id),
+        store.hit_count(event.id),
+    )
+
+
+def flown_text(store: Store, event: Event) -> str:
+    return texts.flown(
+        event.pigeon_name or texts.PIGEON_NAME,
+        store.shoos_of(event.chat_id, event.id),
+        store.hit_count(event.id),
+    )
 
 
 def live_event(
@@ -45,15 +73,21 @@ def live_event(
     if event is None or event.chat_id != chat_id:
         return EventState.NO_EVENT, None
     if event.status == "open" and clock.now() >= event.closes_at:
-        close_event(store, clock, event)
+        store.close_event(event.id)
         return EventState.CLOSED, None
     if event.status != "open":
         return EventState.CLOSED, None
     return EventState.OPEN, event
 
 
-def arrive(store: Store, clock: Clock, chat_id: int, source: str = "manual") -> Event | None:
-    """Open a new arrival. Returns None if the pigeon is already sitting in this chat.
+def arrive(
+    store: Store,
+    clock: Clock,
+    chat_id: int,
+    visitor: Visitor = DEFAULT_VISITOR,
+    source: str = "manual",
+) -> Event | None:
+    """Open a new arrival. Returns None if a pigeon is already sitting in this chat.
 
     source is 'manual' (an admin ran /pigeon arrive) or 'auto' (the scheduler planned it).
     Only 'auto' arrivals count against the spontaneous-message budget.
@@ -65,9 +99,10 @@ def arrive(store: Store, clock: Clock, chat_id: int, source: str = "manual") -> 
     if current is not None:
         if now < current.closes_at:
             return None
-        close_event(store, clock, current)
-    event_id = store.open_event(chat_id, now, now + ARRIVAL_WINDOW, source=source)
-    store.mark_dashboard_dirty(chat_id)
+        store.close_event(current.id)
+    event_id = store.open_event(
+        chat_id, now, now + ARRIVAL_WINDOW, source, visitor.name, visitor.intro
+    )
     event = store.get_event(event_id)
     assert event is not None
     return event
@@ -78,7 +113,7 @@ def hit(
 ) -> HitOutcome:
     """Register a hit by a user on an arrival. One hit per user per arrival.
 
-    The first hit on an arrival also takes the trophy (Золотой помёт) for that user.
+    The first hit on an arrival also takes the trophy (Золотой плевок) for that user.
     """
     state, event = live_event(store, clock, chat_id, event_id)
     if state is EventState.NO_EVENT:
@@ -91,8 +126,4 @@ def hit(
         return HitOutcome.ALREADY
     if store.hit_count(event.id) == 1:
         store.set_trophy(chat_id, user_id, name, now)
-    chat = store.get_chat(chat_id)
-    assert chat is not None
-    quests.after_hit(store, clock, chat)
-    store.mark_dashboard_dirty(chat_id)
     return HitOutcome.HIT

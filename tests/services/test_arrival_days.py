@@ -8,9 +8,9 @@ import pytest
 
 from pigeon.budget import limits
 from pigeon.clock import FixedClock
-from pigeon.repo.store import Store, minute_key
+from pigeon.repo.store import Store
 from pigeon.scheduler import arrivals
-from rigged import EveryDay
+from rigged import CONTENT, EveryDay
 
 CHAT = -9101
 TZ = "Europe/Moscow"
@@ -21,7 +21,7 @@ class FakeSender:
     async def send_arrival(self, chat_id, event) -> int:
         return 1
 
-    async def mark_flown(self, chat_id, message_id, count) -> None:
+    async def mark_flown(self, chat_id, message_id, text) -> None:
         pass
 
 
@@ -31,26 +31,26 @@ def _store() -> Store:
     return store
 
 
-async def _simulate(store, rng, monday, busy_days=()):
+async def _simulate(store, rng, monday, lost_days=()):
     """Run one week day by day. Returns the weekdays (0 = Monday) with an arrival."""
     flown = []
     sender = FakeSender()
     for day in range(7):
         morning = monday + timedelta(days=day)
         clock = FixedClock(morning)
-        await arrivals.tick(store, clock, rng, sender)
+        await arrivals.tick(store, clock, rng, sender, CONTENT)
         plan = store.get_plan(CHAT, morning.date().isoformat())
         if plan.status != "pending":
             continue
         clock.set(plan.planned_at)
-        if day in busy_days:
+        if day in lost_days:
             store.save_plan(CHAT, plan.local_date, plan.planned_at, "skipped")
             continue
-        await arrivals.tick(store, clock, rng, sender)
+        await arrivals.tick(store, clock, rng, sender, CONTENT)
         assert store.get_plan(CHAT, plan.local_date).status == "fired"
         flown.append(day)
         clock.set(plan.planned_at + timedelta(minutes=61))
-        await arrivals.tick(store, clock, rng, sender)
+        await arrivals.tick(store, clock, rng, sender, CONTENT)
     return flown
 
 
@@ -83,8 +83,8 @@ async def test_second_half_of_the_week_is_not_left_empty() -> None:
 
 async def test_lost_arrival_moves_to_the_remaining_days() -> None:
     store = _store()
-    # Picks Monday, then a busy chat loses it; the budget must still be spent this week.
-    flown = await _simulate(store, EveryDay(3), MONDAY, busy_days={0})
+    # Picks Monday, then a pause loses it; the budget must still be spent this week.
+    flown = await _simulate(store, EveryDay(3), MONDAY, lost_days={0})
     store.close()
     assert flown == [1, 2, 3]
 
@@ -111,17 +111,4 @@ def test_no_flight_once_the_budget_is_spent() -> None:
         opened = MONDAY + timedelta(days=i)
         store.open_event(CHAT, opened, opened + timedelta(minutes=60), "auto")
     assert limits.flies_today(store, EveryDay(1), CHAT, MONDAY + timedelta(days=6)) is False
-    store.close()
-
-
-async def test_busy_chat_postponement_still_works_on_a_picked_day() -> None:
-    store = _store()
-    clock = FixedClock(MONDAY)
-    await arrivals.tick(store, clock, EveryDay(5), FakeSender())
-    plan = store.get_plan(CHAT, "2026-11-02")
-    clock.set(plan.planned_at)
-    for _ in range(limits.LIVE_THRESHOLD):
-        store.record_message(CHAT, minute_key(clock.now()))
-    await arrivals.tick(store, clock, EveryDay(5), FakeSender())
-    assert store.get_plan(CHAT, "2026-11-02").postpones == 1
     store.close()

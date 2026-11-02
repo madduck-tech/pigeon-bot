@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pigeon-bot"
 version = "0.1.0"
-description = "Telegram-бот-шутка для чатов сообщества madduck: голубь, которого плюют."
+description = "Дерзкая голубятня: Telegram-бот-шутка для чатов сообщества madduck."
 requires-python = ">=3.12"
 dependencies = [
     "aiogram>=3.13,<4",

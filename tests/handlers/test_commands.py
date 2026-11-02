@@ -9,31 +9,16 @@ from types import SimpleNamespace
 import pytest
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.base import BaseSession
-from aiogram.exceptions import ClientDecodeError, TelegramBadRequest, TelegramNetworkError
-from aiogram.methods import (
-    AnswerCallbackQuery,
-    EditMessageText,
-    GetChatMember,
-    SendDice,
-    SendMessage,
-    SendPoll,
-)
-from aiogram.types import (
-    CallbackQuery,
-    Chat,
-    Dice,
-    Message,
-    PhotoSize,
-    Update,
-    User,
-)
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.methods import AnswerCallbackQuery, EditMessageText, GetChatMember, SendMessage
+from aiogram.types import CallbackQuery, Chat, Message, Update, User
 
 from pigeon.clock import FixedClock
 from pigeon.content import load_content
 from pigeon.handlers.pigeon import build_router
 from pigeon.render import texts
 from pigeon.repo.store import Store
-from pigeon.services import game
+from pigeon.services import achievements, game
 
 CHAT = -1001
 NEW_CHAT = -100777
@@ -43,12 +28,19 @@ NOON = datetime(2026, 11, 2, 9, 0, tzinfo=UTC)
 CONTENT = load_content(Path(__file__).resolve().parents[2] / "content")
 
 
+class Rolls(random.Random):
+    """Every random() is this roll, so a test decides whether the pigeon flies."""
+
+    roll = 0.99
+
+    def random(self) -> float:
+        return self.roll
+
+
 class FakeSession(BaseSession):
-    def __init__(self, dice_value: int = 6) -> None:
+    def __init__(self) -> None:
         super().__init__()
         self.calls = []
-        self.dice_value = dice_value
-        self.dice_queue: list[int] = []
 
     async def close(self) -> None:
         pass
@@ -56,25 +48,10 @@ class FakeSession(BaseSession):
     async def make_request(self, bot, method, timeout=None):
         self.calls.append(method)
         chat = Chat(id=CHAT, type="supergroup")
-        when = NOON
         if isinstance(method, GetChatMember):
             return SimpleNamespace(status="administrator" if method.user_id == ADMIN else "member")
-        if isinstance(method, SendDice):
-            return Message(
-                message_id=900,
-                date=when,
-                chat=chat,
-                dice=Dice(
-                    emoji="🎯",
-                    value=self.dice_queue.pop(0) if self.dice_queue else self.dice_value,
-                ),
-            ).as_(bot)
         if isinstance(method, SendMessage):
-            return Message(message_id=901, date=when, chat=chat, text=method.text)
-        if isinstance(method, SendPoll):
-            return Message(message_id=902, date=when, chat=chat)
-        if isinstance(method, AnswerCallbackQuery):
-            return True
+            return Message(message_id=901, date=NOON, chat=chat, text=method.text)
         return True
 
     async def stream_content(self, *args, **kwargs) -> AsyncGenerator[bytes, None]:
@@ -86,14 +63,8 @@ class FakeSession(BaseSession):
     def toasts(self) -> list[str]:
         return [c.text for c in self.calls if isinstance(c, AnswerCallbackQuery)]
 
-    def edits(self) -> list[str]:
-        return [c.text for c in self.calls if isinstance(c, EditMessageText)]
-
-    def polls(self) -> list[SendPoll]:
-        return [c for c in self.calls if isinstance(c, SendPoll)]
-
-    def throws(self) -> int:
-        return sum(isinstance(c, SendDice) for c in self.calls)
+    def edits(self) -> list[EditMessageText]:
+        return [c for c in self.calls if isinstance(c, EditMessageText)]
 
 
 class Harness:
@@ -103,12 +74,8 @@ class Harness:
         self.session = FakeSession()
         self.bot = Bot("42:TEST", session=self.session)
         self.dp = Dispatcher()
-
-        async def no_sleep(seconds: float) -> None:
-            pass
-
-        router = build_router(store, clock, CONTENT, random.Random(1), sleep=no_sleep)
-        self.dp.include_router(router)
+        self.rng = Rolls(1)
+        self.dp.include_router(build_router(store, clock, CONTENT, self.rng))
         self.update_id = 0
 
     async def _feed(self, **kwargs) -> None:
@@ -123,32 +90,35 @@ class Harness:
         self,
         text: str,
         user_id: int = ADMIN,
-        reply_to: Message | None = None,
         first_name: str = "Anna",
+        chat_id: int = CHAT,
+        sender_chat: Chat | None = None,
     ) -> None:
         message = Message(
             message_id=self.update_id + 1,
             date=NOON,
-            chat=Chat(id=CHAT, type="supergroup"),
+            chat=Chat(id=chat_id, type="supergroup"),
             from_user=User(id=user_id, is_bot=False, first_name=first_name),
+            sender_chat=sender_chat,
             text=text,
             entities=[
                 {"type": "bot_command", "offset": 0, "length": len(text.split()[0])},
             ],
-            reply_to_message=reply_to,
         )
         await self._feed(message=message)
 
-    async def tap(self, data: str, user_id: int = USER) -> None:
+    async def tap(
+        self, data: str, user_id: int = USER, first_name: str = "Boris", chat_id: int = CHAT
+    ) -> None:
         query = CallbackQuery(
             id="1",
-            from_user=User(id=user_id, is_bot=False, first_name="Boris"),
+            from_user=User(id=user_id, is_bot=False, first_name=first_name),
             chat_instance="c",
             data=data,
             message=Message(
                 message_id=500,
                 date=NOON,
-                chat=Chat(id=CHAT, type="supergroup"),
+                chat=Chat(id=chat_id, type="supergroup"),
                 text="x",
             ),
         )
@@ -184,6 +154,9 @@ async def harness(store, clock):
     await h.bot.session.close()
 
 
+VISITOR = game.Visitor("Гена", "Голубь {name} прилетел, курлык.")
+
+
 async def test_pause_is_for_admins_only(harness, store) -> None:
     await harness.command("/pigeon pause 24h", user_id=USER)
     assert harness.session.said() == [texts.ADMIN_ONLY]
@@ -209,7 +182,7 @@ async def test_pause_rejects_other_arguments(harness, store) -> None:
 async def test_fortune_once_a_day_as_a_reply(harness) -> None:
     await harness.command("/pigeon fortune", user_id=USER)
     first = harness.session.calls[-1]
-    assert first.text.startswith("🔮 ") and first.text.removeprefix("🔮 ") in CONTENT.fortunes
+    assert first.text in {texts.fortune(line) for line in CONTENT.fortunes}
     assert first.reply_parameters is not None or first.reply_to_message_id is not None
     await harness.command("/pigeon fortune", user_id=USER)
     assert harness.session.said()[-1] == texts.FORTUNE_ALREADY
@@ -218,17 +191,90 @@ async def test_fortune_once_a_day_as_a_reply(harness) -> None:
 async def test_profile_shows_points_achievements_and_trophy(harness, store, clock) -> None:
     event = game.arrive(store, clock, CHAT)
     game.hit(store, clock, CHAT, event.id, ADMIN, "Anna")
-    store.award(CHAT, ADMIN, "bullseye", clock.now())
+    store.award(CHAT, ADMIN, achievements.SNIPER, clock.now())
     clock.set(clock.now() + timedelta(days=2))
     await harness.command("/pigeon profile")
     text = harness.session.said()[-1]
-    assert "Очки: 1" in text and "В яблочко" in text and "2 дн." in text
+    assert "Очки: <b>1</b>" in text and "Снайпер" in text
+    assert "Золотой плевок: 2 дн." in text
 
 
 async def test_profile_of_a_newcomer(harness) -> None:
     await harness.command("/pigeon profile", user_id=USER)
     text = harness.session.said()[-1]
-    assert "Очки: 0" in text and "пока нет" in text
+    assert "Очки: <b>0</b>" in text and "пока нет" in text
+
+
+async def test_profile_survives_achievements_of_closed_mechanics(harness, store, clock) -> None:
+    # Regression: old databases hold `bullseye`, which has no text any more.
+    store.award(CHAT, ADMIN, "bullseye", clock.now())
+    store.award(CHAT, ADMIN, achievements.SNIPER, clock.now())
+    await harness.command("/pigeon profile")
+    text = harness.session.said()[-1]
+    assert "Снайпер" in text and "bullseye" not in text
+
+
+async def test_stats_show_the_trophy_and_rating(harness, store, clock) -> None:
+    event = game.arrive(store, clock, CHAT)
+    game.hit(store, clock, CHAT, event.id, ADMIN, "Anna")
+    clock.set(clock.now() + timedelta(days=3))
+    await harness.command("/pigeon stats")
+    text = harness.session.said()[-1]
+    assert "Золотой плевок: <b>Anna</b> (держит 3 дн.)" in text
+    assert "1. Anna — 1" in text
+
+
+async def test_stats_in_a_new_chat(harness) -> None:
+    await harness.command("/pigeon stats")
+    assert "пока никто не попадал" in harness.session.said()[-1]
+
+
+async def test_arrive_is_for_admins_only(harness, store) -> None:
+    await harness.command("/pigeon arrive", user_id=USER)
+    assert harness.session.said() == [texts.ADMIN_ONLY]
+    assert store.current_open_event(CHAT) is None
+
+
+async def test_arrive_releases_a_named_pigeon_with_two_buttons(harness, store) -> None:
+    await harness.command("/pigeon arrive")
+    event = store.current_open_event(CHAT)
+    assert event.pigeon_name in CONTENT.names and event.intro in CONTENT.arrivals
+    call = harness.session.calls[-1]
+    assert f"<b>{event.pigeon_name}</b>" in call.text
+    row = call.reply_markup.inline_keyboard[0]
+    assert [button.callback_data for button in row] == [
+        f"pg:hit:{event.id}",
+        f"pg:shoo:{event.id}",
+    ]
+    assert store.get_event(event.id).message_id == 901
+
+
+async def test_status_names_the_pigeon_on_the_windowsill(harness, store, clock) -> None:
+    game.arrive(store, clock, CHAT, VISITOR)
+    await harness.command("/pigeon")
+    assert harness.session.said() == [texts.status_sitting("Гена", 0)]
+
+
+async def test_status_with_no_pigeon(harness) -> None:
+    await harness.command("/pigeon")
+    assert harness.session.said() == [texts.STATUS_AWAY]
+
+
+async def test_status_of_an_arrival_from_before_the_dovecote(harness, store, clock) -> None:
+    now = clock.now()
+    store.open_event(CHAT, now, now + timedelta(hours=1))
+    await harness.command("/pigeon")
+    assert harness.session.said() == [texts.status_sitting(texts.PIGEON_NAME, 0)]
+
+
+async def test_hit_updates_the_count_and_keeps_the_phrase_and_buttons(harness, store, clock):
+    event = game.arrive(store, clock, CHAT, VISITOR)
+    await harness.tap(f"pg:hit:{event.id}")
+    assert harness.session.toasts() == [texts.HIT_OK]
+    edit = harness.session.edits()[-1]
+    assert "Голубь <b>Гена</b> прилетел, курлык." in edit.text
+    assert "Попаданий: <b>1</b>" in edit.text
+    assert edit.reply_markup is not None
 
 
 async def test_hit_button_announces_an_achievement_in_the_toast(harness, store, clock) -> None:
@@ -243,11 +289,89 @@ async def test_hit_button_announces_an_achievement_in_the_toast(harness, store, 
     assert len(toast) <= 200  # Telegram's limit for callback answers
 
 
-async def test_dart_six_announces_bullseye_in_the_reply(harness, store, clock) -> None:
-    event = game.arrive(store, clock, CHAT)
-    await harness.tap(f"pg:dart:{event.id}")
-    assert "В яблочко" in harness.session.said()[-1]
-    assert store.achievements_of(CHAT, USER) == ["bullseye"]
+async def test_shoo_that_fails_is_logged_in_the_message(harness, store, clock) -> None:
+    event = game.arrive(store, clock, CHAT, VISITOR)
+    await harness.tap(f"pg:shoo:{event.id}")
+    assert harness.session.toasts() == [texts.SHOO_STAYED]
+    assert store.current_open_event(CHAT) is not None
+    edit = harness.session.edits()[-1]
+    assert "<b>Boris</b>:" in edit.text
+    assert any(line in edit.text for line in CONTENT.shoos.stayed)
+    assert edit.reply_markup is not None
+    assert harness.session.said() == []  # no new messages in the chat
+
+
+async def test_shoo_that_works_ends_the_arrival(harness, store, clock) -> None:
+    event = game.arrive(store, clock, CHAT, VISITOR)
+    game.hit(store, clock, CHAT, event.id, ADMIN, "Anna")
+    harness.rng.roll = 0.0
+    await harness.tap(f"pg:shoo:{event.id}")
+    assert harness.session.toasts() == [texts.SHOO_FLEW]
+    assert store.current_open_event(CHAT) is None
+    edit = harness.session.edits()[-1]
+    assert "Голубь <b>Гена</b> улетел." in edit.text
+    assert "Попаданий: <b>1</b>" in edit.text
+    assert "Кто спугнул: <b>Boris</b>" in edit.text
+    assert edit.reply_markup is None
+
+
+async def test_second_shoo_by_the_same_person_is_refused(harness, store, clock) -> None:
+    event = game.arrive(store, clock, CHAT, VISITOR)
+    await harness.tap(f"pg:shoo:{event.id}")
+    await harness.tap(f"pg:shoo:{event.id}")
+    assert harness.session.toasts()[-1] == texts.SHOO_ALREADY
+    assert store.shoo_count(CHAT, event.id) == 1
+
+
+async def test_buttons_of_a_flown_pigeon_do_nothing(harness, store, clock) -> None:
+    event = game.arrive(store, clock, CHAT, VISITOR)
+    harness.rng.roll = 0.0
+    await harness.tap(f"pg:shoo:{event.id}")
+    await harness.tap(f"pg:hit:{event.id}", user_id=ADMIN)
+    await harness.tap(f"pg:shoo:{event.id}", user_id=ADMIN)
+    assert harness.session.toasts()[-2:] == [texts.HIT_CLOSED, texts.HIT_CLOSED]
+    assert store.balance(CHAT, ADMIN) == 0
+
+
+async def test_fifth_scared_pigeon_announces_the_achievement(harness, store, clock) -> None:
+    harness.rng.roll = 0.0
+    for _ in range(5):
+        event = game.arrive(store, clock, CHAT, VISITOR)
+        await harness.tap(f"pg:shoo:{event.id}")
+    assert "Гроза голубей" in harness.session.toasts()[-1]
+
+
+async def test_shoo_failing_to_edit_because_nothing_changed_is_fine(harness, store, clock) -> None:
+    event = game.arrive(store, clock, CHAT, VISITOR)
+    real = harness.session.make_request
+
+    async def unchanged(bot, method, timeout=None):
+        if isinstance(method, EditMessageText):
+            raise TelegramBadRequest(method, "message is not modified")
+        return await real(bot, method, timeout)
+
+    harness.session.make_request = unchanged
+    await harness.tap(f"pg:shoo:{event.id}")
+    assert harness.session.toasts() == [texts.SHOO_STAYED]
+
+
+@pytest.mark.parametrize("data", ["pg:dart:1", "pg:bet:1:ge3", "pg:duel_ok:1", "pg:duel_no:1"])
+async def test_buttons_of_closed_mechanics_answer_instead_of_spinning(harness, data) -> None:
+    await harness.tap(data)
+    assert harness.session.toasts() == [texts.BUTTON_RETIRED]
+
+
+@pytest.mark.parametrize("command", ["duel", "photo", "name"])
+async def test_closed_commands_fall_back_to_the_status(harness, command) -> None:
+    await harness.command(f"/pigeon {command}")
+    assert harness.session.said() == [texts.STATUS_AWAY]
+
+
+async def test_chat_messages_are_not_read_or_stored(harness, store) -> None:
+    marker = "голубь-секретноесообщение"
+    await harness.service(CHAT, text=marker)
+    assert harness.session.calls == []
+    assert marker not in "\n".join(store._conn.iterdump())
 
 
 async def test_migration_service_message_moves_the_chat(harness, store) -> None:
@@ -268,11 +392,6 @@ async def test_migration_notice_from_the_new_chat_alone_is_enough(harness, store
     assert store.get_chat(CHAT) is None
 
 
-async def test_plain_messages_are_still_counted(harness, store) -> None:
-    await harness.service(CHAT, text="привет")
-    assert store.messages_since(CHAT, "2026-11-02T00:00:00+00:00") == 1
-
-
 @pytest.mark.parametrize("name", ["Europe", "America", "Etc", "no/such"])
 async def test_setup_rejects_a_timezone_folder_without_crashing(harness, name) -> None:
     # Regression: on Python 3.12 "Europe" raised IsADirectoryError and the bot said nothing.
@@ -280,333 +399,104 @@ async def test_setup_rejects_a_timezone_folder_without_crashing(harness, name) -
     assert harness.session.said() == [texts.TZ_BAD]
 
 
-async def test_repeating_setup_without_a_timezone_keeps_the_current_one(harness, store) -> None:
+def _timezone_buttons(call) -> list[str]:
+    return [b.callback_data for row in call.reply_markup.inline_keyboard for b in row]
+
+
+async def test_setup_of_a_new_chat_waits_for_a_timezone_choice(harness, store) -> None:
+    await harness.command("/pigeon setup", chat_id=NEW_CHAT)
+    call = harness.session.calls[-1]
+    assert call.text == texts.SETUP_CHOOSE
+    assert "pg:tz:Europe/Moscow" in _timezone_buttons(call)
+    assert store.get_chat(NEW_CHAT) is None  # silently starting in UTC would fly at night
+
+    await harness.tap("pg:tz:Asia/Omsk", user_id=ADMIN, chat_id=NEW_CHAT)
+    assert store.is_enabled(NEW_CHAT)
+    assert store.get_chat(NEW_CHAT).timezone == "Asia/Omsk"
+    edit = harness.session.edits()[-1]
+    assert edit.text == texts.SETUP_DONE.format(tz="Asia/Omsk") and edit.reply_markup is None
+
+
+async def test_repeating_setup_shows_the_current_zone_and_changes_it(harness, store) -> None:
     await harness.command("/pigeon setup")
+    assert harness.session.said() == [texts.SETUP_CHOOSE_CURRENT.format(tz="Europe/Moscow")]
+    assert store.get_chat(CHAT).timezone == "Europe/Moscow"
+    await harness.tap("pg:tz:Europe/London", user_id=ADMIN)
+    assert store.get_chat(CHAT).timezone == "Europe/London"
+
+
+async def test_setup_with_a_timezone_needs_no_buttons(harness, store) -> None:
+    await harness.command("/pigeon setup Asia/Tokyo")
+    assert harness.session.said() == [texts.SETUP_DONE.format(tz="Asia/Tokyo")]
+    assert store.get_chat(CHAT).timezone == "Asia/Tokyo"
+
+
+async def test_setup_is_for_admins_only(harness) -> None:
+    await harness.command("/pigeon setup", user_id=USER)
+    assert harness.session.said() == [texts.ADMIN_ONLY]
+
+
+async def test_only_an_admin_can_choose_a_timezone(harness, store) -> None:
+    await harness.tap("pg:tz:Asia/Omsk", user_id=USER)
+    assert harness.session.toasts() == [texts.ADMIN_ONLY]
     assert store.get_chat(CHAT).timezone == "Europe/Moscow"
 
 
-def _said_by(user_id: int, first_name: str, is_bot: bool = False, **fields) -> Message:
-    return Message(
-        message_id=400,
-        date=NOON,
-        chat=Chat(id=CHAT, type="supergroup"),
-        from_user=User(id=user_id, is_bot=is_bot, first_name=first_name),
-        **fields,
-    )
+async def test_forged_timezone_button_is_refused(harness, store) -> None:
+    await harness.tap("pg:tz:Asia/Tokyo", user_id=ADMIN)  # valid, but not offered
+    assert harness.session.toasts() == [texts.TZ_UNKNOWN]
+    assert store.get_chat(CHAT).timezone == "Europe/Moscow"
 
 
-def _photo() -> list[PhotoSize]:
-    return [PhotoSize(file_id="f", file_unique_id="u", width=1, height=1)]
-
-
-def _duel_button(harness) -> str:
-    markup = next(c for c in harness.session.calls if getattr(c, "reply_markup", None)).reply_markup
-    return markup.inline_keyboard[0][0].callback_data
-
-
-async def _start_duel(harness) -> str:
-    await harness.command("/pigeon duel", reply_to=_said_by(USER, "Boris"))
-    return _duel_button(harness)
-
-
-async def test_duel_by_reply_posts_a_challenge_without_pinging(harness) -> None:
-    await _start_duel(harness)
-    call = harness.session.calls[-1]
-    assert call.text == texts.DUEL_CHALLENGE.format(a="Anna", b="Boris")
-    assert call.entities is None and call.reply_parameters is None
-
-
-async def test_duel_by_username(harness, store) -> None:
-    store.remember_member(CHAT, USER, "Boris", "boris_b")
-    await harness.command("/pigeon duel @Boris_B")
-    assert harness.session.said() == [texts.DUEL_CHALLENGE.format(a="Anna", b="Boris")]
-
-
-async def test_duel_with_someone_who_only_chatted(harness) -> None:
-    user = User(id=USER, is_bot=False, first_name="Boris", username="boris_b")
-    await harness.service(CHAT, text="привет", from_user=user)
-    await harness.command("/pigeon duel @boris_b")
-    assert harness.session.said() == [texts.DUEL_CHALLENGE.format(a="Anna", b="Boris")]
-
-
-async def test_duel_with_an_unknown_username(harness, store) -> None:
-    await harness.command("/pigeon duel @nobody")
-    assert harness.session.said() == [texts.DUEL_UNKNOWN]
-
-
-async def test_duel_without_a_target(harness) -> None:
-    await harness.command("/pigeon duel")
-    assert harness.session.said() == [texts.DUEL_USAGE]
-
-
-async def test_duel_with_yourself(harness) -> None:
-    await harness.command("/pigeon duel", reply_to=_said_by(ADMIN, "Anna"))
-    assert harness.session.said() == [texts.DUEL_SELF]
-
-
-async def test_duel_with_a_bot(harness) -> None:
-    await harness.command("/pigeon duel", reply_to=_said_by(99, "Bot", is_bot=True))
-    assert harness.session.said() == [texts.DUEL_BOT]
-
-
-async def test_second_duel_is_refused_while_one_is_live(harness) -> None:
-    await _start_duel(harness)
-    await harness.command("/pigeon duel", reply_to=_said_by(USER, "Boris"))
-    assert harness.session.said()[-1] == texts.DUEL_BUSY
-
-
-async def test_failed_challenge_message_does_not_hold_the_chat(harness, store, clock) -> None:
+async def test_double_tap_on_a_timezone_is_harmless(harness, store) -> None:
     real = harness.session.make_request
+    await harness.tap("pg:tz:Asia/Omsk", user_id=ADMIN)
 
-    async def fails(bot, method, timeout=None):
-        if isinstance(method, SendMessage):
-            raise RuntimeError("telegram unavailable")
+    async def unchanged(bot, method, timeout=None):
+        if isinstance(method, EditMessageText):
+            raise TelegramBadRequest(method, "message is not modified")
         return await real(bot, method, timeout)
 
-    harness.session.make_request = fails
-    with pytest.raises(RuntimeError):
-        await harness.command("/pigeon duel", reply_to=_said_by(USER, "Boris"))
-    harness.session.make_request = real
-    await harness.command("/pigeon duel", reply_to=_said_by(USER, "Boris"))
-    assert harness.session.said()[-1] == texts.DUEL_CHALLENGE.format(a="Anna", b="Boris")
+    harness.session.make_request = unchanged
+    await harness.tap("pg:tz:Asia/Omsk", user_id=ADMIN)
+    assert store.get_chat(CHAT).timezone == "Asia/Omsk"
 
 
-async def test_only_the_opponent_can_press_accept(harness) -> None:
-    button = await _start_duel(harness)
-    await harness.tap(button, user_id=ADMIN)
-    assert harness.session.toasts() == [texts.DUEL_NOT_YOURS]
-    assert harness.session.throws() == 0
-
-
-async def test_full_bout_from_accept_to_result(harness, store) -> None:
-    harness.session.dice_queue = [6, 1, 3, 3, 1, 6, 5, 2]
-    button = await _start_duel(harness)
-    await harness.tap(button, user_id=USER)
-    assert harness.session.throws() == 8
-    assert harness.session.edits() == [texts.DUEL_FIGHT.format(a="Anna", b="Boris")]
-    result = harness.session.calls[-1].text
-    assert "Раунд 2: 3 : 3, ничья" in result
-    assert "Счёт 2 : 1" in result
-    assert texts.DUEL_WIN.format(name="Anna", points=3) in result
-    assert "Дуэлянт" in result
-    assert store.balance(CHAT, ADMIN) == 3
-    assert store.balance(CHAT, USER) == 0
-
-
-async def test_double_tap_on_accept_runs_one_bout(harness) -> None:
-    harness.session.dice_queue = [6, 1] * 3
-    button = await _start_duel(harness)
-    await harness.tap(button, user_id=USER)
-    await harness.tap(button, user_id=USER)
-    assert harness.session.throws() == 6
-    assert harness.session.toasts()[-1] == texts.DUEL_GONE
-
-
-async def test_constant_ties_end_in_a_draw(harness, store) -> None:
-    button = await _start_duel(harness)
-    await harness.tap(button, user_id=USER)
-    assert texts.DUEL_DRAW in harness.session.calls[-1].text
-    assert store.balance(CHAT, ADMIN) == store.balance(CHAT, USER) == 0
-
-
-async def test_error_during_a_bout_leaves_it_for_the_sweep(harness, store, clock) -> None:
-    from pigeon.services import duels
-
-    button = await _start_duel(harness)
-    real = harness.session.make_request
-
-    async def fails(bot, method, timeout=None):
-        if isinstance(method, SendDice):
-            raise RuntimeError("telegram unavailable")
-        return await real(bot, method, timeout)
-
-    harness.session.make_request = fails
-    with pytest.raises(RuntimeError):
-        await harness.tap(button, user_id=USER)
-    assert store.balance(CHAT, ADMIN) == store.balance(CHAT, USER) == 0
-    clock.set(clock.now() + duels.BOUT_TIME)
-    assert len(duels.sweep(store, clock)) == 1
-
-
-async def test_decline_edits_the_challenge(harness, store) -> None:
-    await _start_duel(harness)
-    button = _duel_button(harness).replace("duel_ok", "duel_no")
-    await harness.tap(button, user_id=USER)
-    assert harness.session.edits() == [texts.DUEL_DECLINED.format(b="Boris")]
-    assert harness.session.throws() == 0
-
-
-async def test_duel_works_during_quiet_hours_and_pause(harness, store, clock) -> None:
-    store.set_paused_until(CHAT, clock.now() + timedelta(days=1))
-    clock.set(clock.now() + timedelta(hours=13))  # 01:00 Moscow
-    button = await _start_duel(harness)
-    await harness.tap(button, user_id=USER)
-    assert harness.session.throws() > 0
-
-
-async def test_duel_callback_data_fits_telegram(harness) -> None:
-    from pigeon.telegram.messages import duel_keyboard
-
-    row = duel_keyboard(2**63 - 1).inline_keyboard[0]
-    assert all(len(button.callback_data.encode()) <= 64 for button in row)
-
-
-async def test_photo_command_replies_silently_with_the_poll(harness) -> None:
+async def test_anonymous_admin_can_run_setup(harness, store) -> None:
+    # Regression: the service account is a plain member, so anonymous admins were refused.
     await harness.command(
-        "/pigeon photo", user_id=USER, reply_to=_said_by(ADMIN, "A", photo=_photo())
+        "/pigeon setup Asia/Omsk",
+        user_id=1087968824,
+        sender_chat=Chat(id=CHAT, type="supergroup"),
     )
-    poll = harness.session.polls()[0]
-    assert poll.question == texts.PHOTO_QUESTION
-    assert [option.text for option in poll.options] == list(texts.PHOTO_OPTIONS)
-    assert poll.reply_parameters.message_id == 400
-    assert poll.disable_notification is True
+    assert harness.session.said() == [texts.SETUP_DONE.format(tz="Asia/Omsk")]
 
 
-async def test_photo_command_needs_a_photo(harness) -> None:
-    await harness.command("/pigeon photo", reply_to=_said_by(USER, "Boris", text="x"))
-    await harness.command("/pigeon photo")
-    assert harness.session.said() == [texts.PHOTO_USAGE] * 2
-    assert harness.session.polls() == []
-
-
-async def test_photo_command_works_at_night_but_only_once_an_hour(harness, clock) -> None:
-    clock.set(clock.now() + timedelta(hours=13))  # 01:00 Moscow
-    target = _said_by(USER, "Boris", photo=_photo())
-    await harness.command("/pigeon photo", reply_to=target)
-    await harness.command("/pigeon photo", reply_to=target)
-    assert len(harness.session.polls()) == 1
-    assert harness.session.said() == [texts.PHOTO_COOLDOWN]
-
-
-async def test_photo_caption_starts_a_poll_and_is_still_counted(harness, store) -> None:
-    await harness.service(CHAT, photo=_photo(), caption="смотрите, голубь")
-    assert len(harness.session.polls()) == 1
-    assert store.messages_since(CHAT, "2026-11-02T00:00:00+00:00") == 1
-
-
-async def test_photo_with_another_caption_is_ignored(harness) -> None:
-    await harness.service(CHAT, photo=_photo(), caption="котик")
-    await harness.service(CHAT, text="голубь")
-    assert harness.session.polls() == []
-
-
-async def test_caption_in_a_chat_without_setup_is_ignored(harness) -> None:
-    await harness.service(-555, photo=_photo(), caption="голубь")
-    assert harness.session.polls() == []
-
-
-async def test_captions_are_not_stored(harness, store, tmp_path) -> None:
-    marker = "голубь-секретнаяподпись"
-    await harness.service(CHAT, photo=_photo(), caption=f"голубь {marker}")
-    dump = "\n".join(store._conn.iterdump())
-    assert marker not in dump
-
-
-async def test_name_vote_is_for_admins_only(harness) -> None:
-    await harness.command("/pigeon name", user_id=USER)
+async def test_a_channel_posting_in_the_chat_is_not_an_admin(harness, store) -> None:
+    await harness.command(
+        "/pigeon setup Asia/Omsk",
+        user_id=136817688,
+        sender_chat=Chat(id=-100555, type="channel"),
+    )
     assert harness.session.said() == [texts.ADMIN_ONLY]
-    assert harness.session.polls() == []
 
 
-async def test_name_vote_opens_once(harness, store) -> None:
-    await harness.command("/pigeon name")
-    await harness.command("/pigeon name")
-    poll = harness.session.polls()[0]
-    assert poll.question == texts.NAME_QUESTION
-    names = {option.text for option in poll.options}
-    assert len(names) == 5 and names <= set(CONTENT.names)
-    assert harness.session.said() == [texts.NAME_ALREADY]
-    assert store.open_name_vote(CHAT).message_id == 902
-
-
-async def test_help_mentions_what_the_bot_sees_and_the_new_commands(harness) -> None:
+async def test_help_says_what_is_kept_and_lists_only_live_commands(harness) -> None:
     await harness.command("/pigeon help")
     text = harness.session.said()[0]
-    assert all(word in text for word in ("/pigeon duel", "/pigeon photo", "/pigeon name"))
-    assert "username" in text and "не сохраняет" in text
+    assert "Голубятня" in text and "не сохраняет" in text
+    assert all(word in text for word in ("/pigeon stats", "/pigeon fortune", "/pigeon arrive"))
+    assert not any(word in text for word in ("/pigeon duel", "/pigeon photo", "/pigeon name"))
 
 
-async def test_accepted_duel_runs_even_if_the_tap_cannot_be_confirmed(harness, store) -> None:
-    # Regression: "query is too old" after a restart left the duel active with no bout.
-    harness.session.dice_queue = [6, 1] * 3
-    button = await _start_duel(harness)
-    real = harness.session.make_request
+async def test_callback_data_fits_telegram() -> None:
+    from pigeon.telegram.messages import arrival_keyboard, timezone_keyboard
 
-    async def too_old(bot, method, timeout=None):
-        if isinstance(method, (AnswerCallbackQuery, EditMessageText)):
-            raise TelegramBadRequest(method, "query is too old")
-        return await real(bot, method, timeout)
-
-    harness.session.make_request = too_old
-    await harness.tap(button, user_id=USER)
-    assert harness.session.throws() == 6
-    assert store.balance(CHAT, ADMIN) == 3
-
-
-async def test_decline_still_edits_if_the_tap_cannot_be_confirmed(harness) -> None:
-    await _start_duel(harness)
-    button = _duel_button(harness).replace("duel_ok", "duel_no")
-    real = harness.session.make_request
-
-    async def too_old(bot, method, timeout=None):
-        if isinstance(method, AnswerCallbackQuery):
-            raise TelegramBadRequest(method, "query is too old")
-        return await real(bot, method, timeout)
-
-    harness.session.make_request = too_old
-    await harness.tap(button, user_id=USER)
-    harness.session.make_request = real
-    assert harness.session.edits() == [texts.DUEL_DECLINED.format(b="Boris")]
-
-
-async def test_bout_stops_throwing_once_it_was_swept(harness, store, clock) -> None:
-    from pigeon.services import duels
-
-    button = await _start_duel(harness)
-    real = harness.session.make_request
-
-    async def stalls(bot, method, timeout=None):
-        if isinstance(method, SendDice) and harness.session.throws() == 1:
-            clock.set(clock.now() + duels.BOUT_TIME)
-            duels.sweep(store, clock)
-        return await real(bot, method, timeout)
-
-    harness.session.make_request = stalls
-    await harness.tap(button, user_id=USER)
-    assert harness.session.throws() == 2  # the round in progress, then it stops
-    assert store.balance(CHAT, ADMIN) == store.balance(CHAT, USER) == 0
-
-
-async def test_failed_connection_does_not_lock_out_the_name_vote(harness, store) -> None:
-    # Regression: a refused connection cost the month and answered "already running" for a day.
-    real = harness.session.make_request
-
-    async def refused(bot, method, timeout=None):
-        if isinstance(method, SendPoll):
-            raise TelegramNetworkError(method, "connection refused")
-        return await real(bot, method, timeout)
-
-    harness.session.make_request = refused
-    with pytest.raises(TelegramNetworkError):
-        await harness.command("/pigeon name")
-    assert store.open_name_vote(CHAT) is None
-    harness.session.make_request = real
-    await harness.command("/pigeon name")
-    assert len(harness.session.polls()) == 1
-
-
-async def test_non_json_gateway_error_does_not_stall_an_accepted_duel(harness, store) -> None:
-    # Regression: an HTML 502 is not a TelegramAPIError, and it stopped the bout.
-    harness.session.dice_queue = [6, 1] * 3
-    button = await _start_duel(harness)
-    real = harness.session.make_request
-
-    async def gateway(bot, method, timeout=None):
-        if isinstance(method, (AnswerCallbackQuery, EditMessageText)):
-            raise ClientDecodeError("bad gateway", ValueError("not json"), "<html>")
-        return await real(bot, method, timeout)
-
-    harness.session.make_request = gateway
-    await harness.tap(button, user_id=USER)
-    assert harness.session.throws() == 6
-    assert store.balance(CHAT, ADMIN) == 3
+    row = arrival_keyboard(2**63 - 1).inline_keyboard[0]
+    assert all(len(button.callback_data.encode()) <= 64 for button in row)
+    assert all(
+        len(data.encode()) <= 64
+        for data in _timezone_buttons(
+            SimpleNamespace(reply_markup=timezone_keyboard(CONTENT.timezones))
+        )
+    )

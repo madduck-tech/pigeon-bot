@@ -1,32 +1,34 @@
-"""Telegram handlers: /pigeon commands and the hit button. Thin: logic lives in services."""
+"""Telegram handlers: /pigeon commands and the arrival buttons. Thin: logic lives in services."""
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import random
 from datetime import timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiogram import F, Router
-from aiogram.exceptions import AiogramError, TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
-from aiogram.types import CallbackQuery, Message, User
+from aiogram.types import CallbackQuery, Message
 
 from pigeon.budget import limits
 from pigeon.clock import Clock
 from pigeon.content import Content
 from pigeon.render import texts
-from pigeon.repo.store import Store, minute_key
-from pigeon.services import achievements, bets, darts, duels, fortune, game, name_vote, photo
-from pigeon.telegram.duels import Sleep, run_bout
-from pigeon.telegram.messages import TelegramArrivalSender, arrival_keyboard, duel_keyboard
+from pigeon.repo.store import Store
+from pigeon.services import achievements, fortune, game
+from pigeon.services.shoo import ShooOutcome, shoo
+from pigeon.telegram.messages import (
+    TelegramArrivalSender,
+    arrival_keyboard,
+    timezone_keyboard,
+)
 
 log = logging.getLogger("pigeon.handlers")
 
 GROUP_TYPES = {"group", "supergroup"}
 ADMIN_STATUSES = {"creator", "administrator"}
-DEFAULT_TIMEZONE = "UTC"
 PAUSE_DURATIONS = {"24h": timedelta(hours=24), "7d": timedelta(days=7)}
 
 
@@ -39,21 +41,18 @@ def _valid_timezone(name: str) -> bool:
     return True
 
 
-def build_router(
-    store: Store,
-    clock: Clock,
-    content: Content,
-    rng: random.Random,
-    sleep: Sleep = asyncio.sleep,
-) -> Router:
+def build_router(store: Store, clock: Clock, content: Content, rng: random.Random) -> Router:
     router = Router(name="pigeon")
 
     def award_names(codes: list[str]) -> list[str]:
-        return [content.achievements[code].name for code in codes]
+        # Achievements of closed mechanics stay in old databases but have no text any more.
+        return [content.achievements[code].name for code in codes if code in content.achievements]
 
     async def is_admin(message: Message) -> bool:
-        member = await message.bot.get_chat_member(message.chat.id, message.from_user.id)
-        return member.status in ADMIN_STATUSES
+        # An anonymous admin posts as the chat itself, from a shared service account.
+        if message.sender_chat is not None and message.sender_chat.id == message.chat.id:
+            return True
+        return await _is_chat_admin(message.bot, message.chat.id, message.from_user.id)
 
     @router.message(Command("pigeon"))
     async def pigeon_command(message: Message, command: CommandObject) -> None:
@@ -72,8 +71,16 @@ def build_router(
             if not await is_admin(message):
                 await message.answer(texts.ADMIN_ONLY)
                 return
-            current = store.get_chat(chat_id)
-            tz = parts[1] if len(parts) > 1 else (current.timezone if current else DEFAULT_TIMEZONE)
+            if len(parts) < 2:
+                current = store.get_chat(chat_id) if store.is_enabled(chat_id) else None
+                await message.answer(
+                    texts.SETUP_CHOOSE_CURRENT.format(tz=current.timezone)
+                    if current
+                    else texts.SETUP_CHOOSE,
+                    reply_markup=timezone_keyboard(content.timezones),
+                )
+                return
+            tz = parts[1]
             if not _valid_timezone(tz):
                 await message.answer(texts.TZ_BAD)
                 return
@@ -84,8 +91,6 @@ def build_router(
         if not store.is_enabled(chat_id):
             await message.answer(texts.NOT_ENABLED)
             return
-
-        _remember(store, chat_id, message.from_user)
 
         if sub == "quiet":
             if not await is_admin(message):
@@ -122,46 +127,25 @@ def build_router(
             line = fortune.draw(
                 store, clock, rng, content.fortunes, store.get_chat(chat_id), message.from_user.id
             )
-            await message.reply(texts.FORTUNE_ALREADY if line is None else f"🔮 {line}")
+            await message.reply(texts.FORTUNE_ALREADY if line is None else texts.fortune(line))
             return
 
         if sub == "stats":
-            rows = store.leaderboard(chat_id)
-            await message.answer(texts.stats(rows) if rows else texts.NO_STATS)
-            return
-
-        if sub == "duel":
-            await _challenge(store, clock, message, parts[1:])
-            return
-
-        if sub == "photo":
-            reply = message.reply_to_message
-            if reply is None or not reply.photo:
-                await message.answer(texts.PHOTO_USAGE)
-            elif not photo.claim(store, clock, chat_id):
-                await message.answer(texts.PHOTO_COOLDOWN)
-            else:
-                await _send_photo_poll(message, reply.message_id)
-            return
-
-        if sub == "name":
-            if not await is_admin(message):
-                await message.answer(texts.ADMIN_ONLY)
-                return
-            outcome = await name_vote.start(
-                store, clock, rng, TelegramArrivalSender(message.bot), content.names, chat_id
+            trophy = store.get_trophy(chat_id)
+            await message.answer(
+                texts.stats(
+                    store.leaderboard(chat_id),
+                    trophy.holder_name if trophy else None,
+                    (clock.now() - trophy.since).days if trophy else 0,
+                )
             )
-            if outcome is name_vote.Start.ALREADY:
-                await message.answer(texts.NAME_ALREADY)
-            elif outcome is name_vote.Start.NO_OPTIONS:
-                await message.answer(texts.NAME_NO_OPTIONS)
             return
 
         if sub == "arrive":
             if not await is_admin(message):
                 await message.answer(texts.ADMIN_ONLY)
                 return
-            event = game.arrive(store, clock, chat_id, source="manual")
+            event = game.arrive(store, clock, chat_id, game.pick_visitor(rng, content))
             if event is None:
                 await message.answer(texts.ALREADY_SITTING)
                 return
@@ -171,7 +155,8 @@ def build_router(
 
         current = store.current_open_event(chat_id)
         if current is not None and clock.now() < current.closes_at:
-            await message.answer(texts.STATUS_SITTING.format(count=store.hit_count(current.id)))
+            name = current.pigeon_name or texts.PIGEON_NAME
+            await message.answer(texts.status_sitting(name, store.hit_count(current.id)))
         else:
             await message.answer(texts.STATUS_AWAY)
 
@@ -181,7 +166,6 @@ def build_router(
             await callback.answer()
             return
         chat_id = callback.message.chat.id
-        _remember(store, chat_id, callback.from_user)
         event_id = int(callback.data.rsplit(":", 1)[1])
         name = callback.from_user.full_name
         outcome = game.hit(store, clock, chat_id, event_id, callback.from_user.id, name)
@@ -198,100 +182,61 @@ def build_router(
         else:
             await callback.answer(texts.HIT_NO_EVENT)
 
-    @router.callback_query(F.data.startswith("pg:dart:"))
-    async def dart_callback(callback: CallbackQuery) -> None:
+    @router.callback_query(F.data.startswith("pg:shoo:"))
+    async def shoo_callback(callback: CallbackQuery) -> None:
         if callback.message is None or callback.data is None:
             await callback.answer()
             return
         chat_id = callback.message.chat.id
-        _remember(store, chat_id, callback.from_user)
         event_id = int(callback.data.rsplit(":", 1)[1])
         user_id = callback.from_user.id
-        outcome = darts.check(store, clock, chat_id, event_id, user_id)
-        if outcome is darts.DartOutcome.ALREADY_TODAY:
-            await callback.answer(texts.DART_ALREADY)
-            return
-        if outcome is darts.DartOutcome.CLOSED:
-            await callback.answer(texts.DART_CLOSED)
-            return
-        if outcome is darts.DartOutcome.NO_EVENT:
-            await callback.answer(texts.HIT_NO_EVENT)
-            return
-        await callback.answer()
-        throw = await callback.message.answer_dice(emoji="🎯")
-        value = throw.dice.value
-        points = darts.record(
-            store, clock, chat_id, event_id, user_id, callback.from_user.full_name, value
-        )
-        if points is None:
-            await throw.reply(texts.DART_ALREADY)
-            return
-        earned = achievements.after_dart(store, clock, chat_id, user_id, value)
-        result = texts.DART_RESULT.format(value=value, points=points)
-        await throw.reply(texts.with_awards(result, award_names(earned)))
-
-    @router.callback_query(F.data.startswith("pg:bet:"))
-    async def bet_callback(callback: CallbackQuery) -> None:
-        if callback.message is None or callback.data is None:
-            await callback.answer()
-            return
-        chat_id = callback.message.chat.id
-        _remember(store, chat_id, callback.from_user)
-        _, _, event_part, choice = callback.data.split(":")
-        outcome = bets.place(
+        outcome = shoo(
             store,
             clock,
+            rng,
+            content.shoos,
             chat_id,
-            int(event_part),
-            callback.from_user.id,
+            event_id,
+            user_id,
             callback.from_user.full_name,
-            choice,
         )
-        replies = {
-            bets.BetOutcome.PLACED: texts.BET_PLACED.format(choice=texts.BET_CHOICE[choice]),
-            bets.BetOutcome.ALREADY: texts.BET_ALREADY,
-            bets.BetOutcome.CLOSED: texts.BET_CLOSED,
-            bets.BetOutcome.NO_BALANCE: texts.BET_NO_BALANCE,
-            bets.BetOutcome.NO_EVENT: texts.HIT_NO_EVENT,
-        }
-        await callback.answer(replies[outcome])
 
-    @router.callback_query(F.data.startswith("pg:duel_ok:"))
-    async def duel_accept_callback(callback: CallbackQuery) -> None:
+        if outcome is ShooOutcome.STAYED:
+            await callback.answer(texts.SHOO_STAYED)
+            await _refresh_arrival(callback, store, event_id)
+        elif outcome is ShooOutcome.FLEW:
+            earned = achievements.after_scare(store, clock, chat_id, user_id)
+            await callback.answer(texts.with_awards(texts.SHOO_FLEW, award_names(earned)))
+            await _mark_flown(callback, store, event_id)
+        elif outcome is ShooOutcome.ALREADY:
+            await callback.answer(texts.SHOO_ALREADY)
+        elif outcome is ShooOutcome.CLOSED:
+            await callback.answer(texts.HIT_CLOSED)
+            await _mark_flown(callback, store, event_id)
+        else:
+            await callback.answer(texts.HIT_NO_EVENT)
+
+    @router.callback_query(F.data.startswith("pg:tz:"))
+    async def timezone_callback(callback: CallbackQuery) -> None:
         if callback.message is None or callback.data is None:
             await callback.answer()
             return
         chat_id = callback.message.chat.id
-        duel_id = int(callback.data.rsplit(":", 1)[1])
-        answer = duels.accept(store, clock, chat_id, duel_id, callback.from_user.id)
-        if answer is not duels.Answer.OK:
-            await callback.answer(_DUEL_REFUSALS[answer])
+        if not await _is_chat_admin(callback.bot, chat_id, callback.from_user.id):
+            await callback.answer(texts.ADMIN_ONLY)
             return
-        duel = store.get_duel(chat_id, duel_id)
-        await _settle_duel_message(
-            callback,
-            texts.DUEL_FIGHT.format(
-                a=duels.member_name(store, chat_id, duel.challenger_id),
-                b=duels.member_name(store, chat_id, duel.opponent_id),
-            ),
-        )
-        await run_bout(callback.bot, store, clock, duel, sleep, award_names)
+        tz = callback.data.removeprefix("pg:tz:")
+        if tz not in content.timezones.values():
+            await callback.answer(texts.TZ_UNKNOWN)
+            return
+        store.enable_chat(chat_id, clock.now(), tz)
+        await callback.answer()
+        await _edit(callback.message, texts.SETUP_DONE.format(tz=tz), None)
 
-    @router.callback_query(F.data.startswith("pg:duel_no:"))
-    async def duel_decline_callback(callback: CallbackQuery) -> None:
-        if callback.message is None or callback.data is None:
-            await callback.answer()
-            return
-        chat_id = callback.message.chat.id
-        duel_id = int(callback.data.rsplit(":", 1)[1])
-        answer = duels.decline(store, clock, chat_id, duel_id, callback.from_user.id)
-        if answer is not duels.Answer.OK:
-            await callback.answer(_DUEL_REFUSALS[answer])
-            return
-        await _settle_duel_message(
-            callback,
-            texts.DUEL_DECLINED.format(b=duels.member_name(store, chat_id, callback.from_user.id)),
-        )
+    @router.callback_query(F.data.startswith("pg:"))
+    async def retired_button(callback: CallbackQuery) -> None:
+        # Buttons of closed mechanics can still sit in old messages.
+        await callback.answer(texts.BUTTON_RETIRED)
 
     @router.message(F.migrate_to_chat_id)
     async def chat_migrated_out(message: Message) -> None:
@@ -301,99 +246,12 @@ def build_router(
     async def chat_migrated_in(message: Message) -> None:
         _migrate(store, message.migrate_from_chat_id, message.chat.id)
 
-    @router.message(F.chat.type.in_(GROUP_TYPES))
-    async def on_group_message(message: Message) -> None:
-        # Live-chat check: only a per-minute count is kept, never the message text.
-        # Runs after the /pigeon command handler, so commands are not counted.
-        chat_id = message.chat.id
-        if not store.is_enabled(chat_id):
-            return
-        store.record_message(chat_id, minute_key(clock.now()))
-        _remember(store, chat_id, message.from_user)
-        if message.photo and photo.claim_for_caption(
-            store, clock, store.get_chat(chat_id), message.caption
-        ):
-            await _send_photo_poll(message, message.message_id)
-
     return router
 
 
-_DUEL_REFUSALS = {
-    duels.Answer.NOT_OPPONENT: texts.DUEL_NOT_YOURS,
-    duels.Answer.GONE: texts.DUEL_GONE,
-}
-
-
-def _remember(store: Store, chat_id: int, user: User | None) -> None:
-    # Keeps @username lookups current. Bots are not members; a chat without setup stores nothing.
-    if user is not None and not user.is_bot and store.is_enabled(chat_id):
-        store.remember_member(chat_id, user.id, user.full_name, user.username)
-
-
-def _duel_target(store: Store, message: Message, args: list[str]) -> tuple[int | None, str | None]:
-    """The opponent named by a command: (user_id, None), or (None, a text explaining why not)."""
-    chat_id = message.chat.id
-    target = next((e.user for e in message.entities or [] if e.type == "text_mention"), None)
-    reply = message.reply_to_message
-    # In a forum, a plain message counts as a reply to the topic's opening service message.
-    if target is None and not args and reply is not None and not reply.forum_topic_created:
-        target = reply.from_user
-    if target is not None:
-        if target.is_bot:
-            return None, texts.DUEL_BOT
-        _remember(store, chat_id, target)
-        return target.id, None
-    if not args:
-        return None, texts.DUEL_USAGE
-    user_id = store.member_by_username(chat_id, args[0].removeprefix("@"))
-    return (user_id, None) if user_id is not None else (None, texts.DUEL_UNKNOWN)
-
-
-async def _challenge(store: Store, clock: Clock, message: Message, args: list[str]) -> None:
-    chat_id = message.chat.id
-    challenger = message.from_user
-    if challenger.is_bot:  # an anonymous admin posts as a shared bot account
-        await message.answer(texts.DUEL_BOT)
-        return
-    opponent_id, refusal = _duel_target(store, message, args)
-    if refusal is None and opponent_id == challenger.id:
-        refusal = texts.DUEL_SELF
-    if refusal is not None:
-        await message.answer(refusal)
-        return
-    duel_id = duels.challenge(store, clock, chat_id, challenger.id, opponent_id)
-    if duel_id is None:
-        await message.answer(texts.DUEL_BUSY)
-        return
-    text = texts.DUEL_CHALLENGE.format(
-        a=duels.member_name(store, chat_id, challenger.id),
-        b=duels.member_name(store, chat_id, opponent_id),
-    )
-    try:
-        sent = await message.answer(text, reply_markup=duel_keyboard(duel_id))
-    except Exception:
-        store.delete_duel(chat_id, duel_id)  # nobody can answer it, so it must not hold the chat
-        raise
-    store.set_duel_message(chat_id, duel_id, sent.message_id)
-
-
-async def _settle_duel_message(callback: CallbackQuery, text: str) -> None:
-    """Confirm the tap and update the challenge. The answer is already stored, so neither call
-    may stop what follows: a tap read late from a restart backlog cannot be confirmed at all."""
-    try:
-        await callback.answer(texts.DUEL_ANSWERED)
-    except AiogramError as exc:
-        log.warning("could not confirm a duel answer: %s", exc)
-    try:
-        await callback.message.edit_text(text, reply_markup=None)
-    except AiogramError as exc:
-        log.warning("could not update a duel message: %s", exc)
-
-
-async def _send_photo_poll(message: Message, photo_message_id: int) -> None:
-    await TelegramArrivalSender(message.bot).send_poll(
-        message.chat.id, texts.PHOTO_QUESTION, texts.PHOTO_OPTIONS, reply_to=photo_message_id
-    )
+async def _is_chat_admin(bot, chat_id: int, user_id: int) -> bool:
+    member = await bot.get_chat_member(chat_id, user_id)
+    return member.status in ADMIN_STATUSES
 
 
 def _apply_pause(store: Store, clock: Clock, chat_id: int, args: list[str]) -> str:
@@ -428,25 +286,23 @@ def _quiet_bounds(args: list[str]) -> tuple[int, int] | None:
 
 async def _refresh_arrival(callback: CallbackQuery, store: Store, event_id: int) -> None:
     message = callback.message
-    if message is None:
+    event = store.get_event(event_id)
+    if message is None or event is None:
         return
-    count = store.hit_count(event_id)
-    try:
-        await message.edit_text(
-            texts.ARRIVAL.format(count=count), reply_markup=arrival_keyboard(event_id)
-        )
-    except TelegramBadRequest as exc:
-        if "message is not modified" not in str(exc):
-            raise
+    await _edit(message, game.arrival_text(store, event), arrival_keyboard(event_id))
 
 
 async def _mark_flown(callback: CallbackQuery, store: Store, event_id: int) -> None:
     message = callback.message
-    if message is None:
+    event = store.get_event(event_id)
+    if message is None or event is None:
         return
-    count = store.hit_count(event_id)
+    await _edit(message, game.flown_text(store, event), None)
+
+
+async def _edit(message, text: str, keyboard) -> None:
     try:
-        await message.edit_text(texts.ARRIVAL_FLEW.format(count=count), reply_markup=None)
+        await message.edit_text(text, reply_markup=keyboard)
     except TelegramBadRequest as exc:
         if "message is not modified" not in str(exc):
             raise

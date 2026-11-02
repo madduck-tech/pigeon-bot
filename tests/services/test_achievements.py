@@ -4,12 +4,11 @@ import pytest
 
 from pigeon.clock import FixedClock
 from pigeon.repo.store import Store
-from pigeon.services import achievements, darts, game
+from pigeon.services import achievements, game
 
 CHAT = -5001
 TZ = "Europe/Moscow"
 START = datetime(2026, 10, 1, 9, 0, tzinfo=UTC)
-NOVEMBER_1 = datetime(2026, 10, 31, 21, 0, tzinfo=UTC)  # 00:00 on Nov 1 in Moscow
 
 
 @pytest.fixture
@@ -78,54 +77,32 @@ def test_achievement_is_granted_once(store, clock) -> None:
     assert store.achievements_of(CHAT, 1).count(achievements.SNIPER) == 1
 
 
-@pytest.mark.parametrize("value,earned", [(6, ["bullseye"]), (5, [])])
-def test_bullseye_only_for_a_six(store, clock, value, earned) -> None:
-    assert achievements.after_dart(store, clock, CHAT, 1, value) == earned
+def test_scarer_comes_with_the_fifth_scared_pigeon(store, clock) -> None:
+    for number in range(1, 6):
+        event = game.arrive(store, clock, CHAT)
+        store.upsert_member(CHAT, 1, "u1")
+        store.add_shoo(CHAT, event.id, 1, "кыш", "улетел", True, clock.now())
+        store.close_event(event.id)
+        earned = achievements.after_scare(store, clock, CHAT, 1)
+        assert earned == ([achievements.SCARER] if number == 5 else [])
+    assert achievements.after_scare(store, clock, CHAT, 1) == []
 
 
-def test_second_bullseye_is_not_announced(store, clock) -> None:
-    achievements.after_dart(store, clock, CHAT, 1, 6)
-    assert achievements.after_dart(store, clock, CHAT, 1, 6) == []
-
-
-def test_friend_for_a_month_without_hits(store, clock) -> None:
-    event = game.arrive(store, clock, CHAT)
-    darts.record(store, clock, CHAT, event.id, 3, "dart only", 2)  # known, never hit
-    clock.set(clock.now() + timedelta(days=1))
-    for _ in range(4):
-        _arrival(store, clock, [1])
-    chat = store.get_chat(CHAT)
-    achievements.close_month(store, chat, NOVEMBER_1)
-    assert achievements.FRIEND in store.achievements_of(CHAT, 3)
-    assert store.achievements_of(CHAT, 1) == []
-
-
-def test_no_friend_when_too_few_arrivals(store, clock) -> None:
-    store.upsert_member(CHAT, 3, "lurker")
-    for _ in range(4):
-        _arrival(store, clock, [1])
-    achievements.close_month(store, store.get_chat(CHAT), NOVEMBER_1)
-    assert store.achievements_of(CHAT, 3) == []
-
-
-def test_friend_month_uses_chat_local_boundaries(store, clock) -> None:
-    # 22:00 UTC on Sep 30 is already October 1 in Moscow, so this hit is in October.
-    store.upsert_member(CHAT, 3, "u3")
-    clock.set(datetime(2026, 9, 30, 22, 0, tzinfo=UTC))
-    _arrival(store, clock, [3])
-    clock.set(START)
-    for _ in range(4):
-        _arrival(store, clock, [1])
-    achievements.close_month(store, store.get_chat(CHAT), NOVEMBER_1)
-    assert store.achievements_of(CHAT, 3) == []
-
-
-def test_friend_is_not_decided_before_the_month_ends_locally(store, clock) -> None:
-    # Regression: a job timed in Tokyo fired on Oct 31 in New York and granted October early.
-    store.enable_chat(CHAT, START, "America/New_York")
-    store.upsert_member(CHAT, 3, "u3")
+def test_attempts_that_failed_do_not_count_for_scarer(store, clock) -> None:
     for _ in range(5):
-        _arrival(store, clock, [1])
-    early = datetime(2026, 10, 31, 15, 0, tzinfo=UTC)  # still October in New York
-    achievements.close_month(store, store.get_chat(CHAT), early)
-    assert store.achievements_of(CHAT, 3) == []
+        event = game.arrive(store, clock, CHAT)
+        store.add_shoo(CHAT, event.id, 1, "кыш", "сидит", False, clock.now())
+        store.close_event(event.id)
+    assert store.scares(CHAT, 1) == 0
+    assert achievements.after_scare(store, clock, CHAT, 1) == []
+
+
+def test_trophy_holder_needs_a_week_in_total(store, clock) -> None:
+    store.set_trophy(CHAT, 1, "u1", START)
+    store.set_trophy(CHAT, 2, "u2", START + timedelta(days=4))
+    store.set_trophy(CHAT, 1, "u1", START + timedelta(days=5))
+    achievements.check_trophy_holders(store, CHAT, START + timedelta(days=7))
+    assert store.achievements_of(CHAT, 1) == []
+    achievements.check_trophy_holders(store, CHAT, START + timedelta(days=8))
+    assert store.achievements_of(CHAT, 1) == [achievements.TROPHY_HOLDER]
+    assert store.achievements_of(CHAT, 2) == []

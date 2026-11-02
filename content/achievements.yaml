@@ -1,19 +1,13 @@
 # Achievement texts. Conditions live in src/pigeon/services/achievements.py.
 sniper:
   name: Снайпер
-  description: попал в 5 прилётов подряд
+  description: попадание в 5 прилётов подряд
 early_bird:
   name: Ранняя пташка
-  description: первым попал в 5 прилётах
-bullseye:
-  name: В яблочко
-  description: выбил шестёрку в дартс
-friend:
-  name: Голубиный друг
-  description: целый месяц не плюнул ни разу
+  description: первое попадание в 5 прилётах
 trophy_holder:
   name: Держатель трофея
-  description: суммарно неделю держал Золотой помёт
-duelist:
-  name: Дуэлянт
-  description: выиграл первую дуэль
+  description: суммарно неделя с Золотым плевком
+scarer:
+  name: Гроза голубей
+  description: 5 спугнутых голубей
