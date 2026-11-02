@@ -49,7 +49,9 @@ async def _simulate(store, rng, monday, lost_days=()):
         await arrivals.tick(store, clock, rng, sender, CONTENT)
         assert store.get_plan(CHAT, plan.local_date).status == "fired"
         flown.append(day)
-        clock.set(plan.planned_at + timedelta(minutes=61))
+        event = store.current_open_event(CHAT)
+        assert event is not None
+        clock.set(event.closes_at)
         await arrivals.tick(store, clock, rng, sender, CONTENT)
     return flown
 

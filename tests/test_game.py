@@ -34,7 +34,7 @@ def test_arrive_opens_event_and_refuses_second_while_sitting(store, clock) -> No
     event = game.arrive(store, clock, CHAT)
     assert event is not None
     assert event.status == "open"
-    assert event.closes_at == T0 + game.ARRIVAL_WINDOW
+    assert event.closes_at == T0 + timedelta(minutes=15)
     assert game.arrive(store, clock, CHAT) is None
 
 
