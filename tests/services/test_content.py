@@ -15,7 +15,9 @@ def test_repository_content_loads() -> None:
 
 
 def test_achievement_without_text_fails_at_startup(tmp_path) -> None:
-    (tmp_path / "fortunes.yaml").write_text("- a\n", encoding="utf-8")
+    (tmp_path / "fortunes.yaml").write_text(
+        (CONTENT / "fortunes.yaml").read_text(), encoding="utf-8"
+    )
     (tmp_path / "achievements.yaml").write_text(
         "sniper:\n  name: x\n  description: y\n", encoding="utf-8"
     )

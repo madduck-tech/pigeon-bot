@@ -18,7 +18,7 @@ from pigeon.budget import limits
 from pigeon.clock import Clock
 from pigeon.content import Content
 from pigeon.repo.store import ArrivalPlan, ChatSettings, Event, Store
-from pigeon.services import achievements, game
+from pigeon.services import achievements, game, weekly
 
 log = logging.getLogger("pigeon.scheduler")
 
@@ -71,7 +71,9 @@ async def _tick_chat(
     if event is not None and now >= event.closes_at:
         store.close_event(event.id)
         if event.message_id is not None:
-            await sender.mark_flown(chat_id, event.message_id, game.flown_text(store, event))
+            await sender.mark_flown(
+                chat_id, event.message_id, game.flown_text(store, event, now, content.quests)
+            )
         event = None
 
     # 2. Make today's plan once. The trophy is held with no events at all, so it is checked here.
@@ -93,14 +95,16 @@ async def _tick_chat(
         store.save_plan(chat_id, local_date, plan.planned_at, "skipped")
         return
 
-    arrival = game.arrive(store, clock, chat_id, game.pick_visitor(rng, content), source="auto")
+    arrival = game.arrive(
+        store, clock, chat_id, game.pick_visitor(rng, content), source="auto", rng=rng
+    )
     if arrival is None:
         return
     try:
         message_id = await sender.send_arrival(chat_id, arrival)
     except Exception:
         # Nobody saw it, so it must not count as an arrival. The plan stays and retries.
-        if store.delete_unsent_event(chat_id, arrival.id):
+        if game.delete_unsent_event(store, chat_id, arrival.id):
             raise
         log.warning("chat %s: arrival %s was delivered, response lost", chat_id, arrival.id)
     else:
@@ -119,6 +123,7 @@ async def tick(
     """Run one pass over every enabled chat. A failure in one chat does not stop the others."""
     for chat in store.enabled_chats():
         try:
+            weekly.ensure(store, chat.chat_id, clock.now(), content.quests, rng)
             await _tick_chat(store, clock, rng, sender, content, chat)
         except TelegramMigrateToChat as exc:
             # Safety net for a migration whose service message the bot never received.

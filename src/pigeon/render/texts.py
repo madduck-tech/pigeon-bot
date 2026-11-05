@@ -10,7 +10,8 @@ HELP = (
     "Иногда выпускает в чат голубя. В него можно плюнуть, а можно прогнать.\n\n"
     "<b>Команды</b>\n"
     "/pigeon — кто сейчас на подоконнике\n"
-    "/pigeon stats — Золотой плевок и рейтинг\n"
+    "/pigeon stats [week] — рейтинг и задание недели\n"
+    "/pigeon stats all — общий рейтинг и Золотой плевок\n"
     "/pigeon profile — твои очки, ачивки и трофей\n"
     "/pigeon fortune — личное предсказание, раз в день\n\n"
     "<b>Для админов</b>\n"
@@ -20,8 +21,9 @@ HELP = (
     "/pigeon arrive — выпустить голубя\n\n"
     "<b>Как это работает</b>\n"
     "Голуби прилетают сами до трёх раз в неделю, в случайные дни, днём по часовому поясу чата. "
-    "Каждый день голубятня сама публикует предсказание дня. "
-    "Первый, кто попал, забирает Золотой плевок. "
+    "Каждый день голубятня сама публикует предсказание; по понедельникам — итоги и задание недели. "
+    "Одна попытка плевка может принести 0–3 очка. Первый, кто попал, забирает Золотой плевок. "
+    "У голубей бывают кепка, сонный или золотой вид; золотой удваивает очки. "
     "Чем больше людей прогоняет голубя, тем вероятнее он улетит.\n\n"
     "<b>Приватность</b>\n"
     "Текст сообщений чата бот не сохраняет. "
@@ -86,8 +88,38 @@ def _shoo_line(shoo: ShooLine) -> str:
     return f"📣 {_bold(shoo.name)}: {_esc(shoo.action)} <i>{_esc(shoo.reaction)}</i>"
 
 
-def arrival(name: str, intro: str, shoos: Sequence[ShooLine], count: int) -> str:
-    lines = ["🕊 " + _esc(intro).format(name=_bold(name)), ""]
+def arrival(
+    name: str,
+    intro: str,
+    shoos: Sequence[ShooLine],
+    count: int,
+    pigeon_type: str = "normal",
+    actions: list[dict] | None = None,
+) -> str:
+    lines = ["🕊 " + _esc(intro).format(name=_bold(name))]
+    type_lines = {
+        "capped": "🧢 В кепке. Первый плевок только собьёт её.",
+        "sleepy": "💤 Сонный. Прогнать его проще.",
+        "golden": "✨ Золотой. Очки ×2, улетит через 5 минут.",
+    }
+    if pigeon_type in type_lines:
+        lines.append(type_lines[pigeon_type])
+    lines.append("")
+    if actions is not None:
+        for action in actions:
+            if action["kind"] == "hit":
+                icon = "💦" if action["points"] else "💨"
+                points = f" +{action['points']}" if action["points"] else ""
+                lines.append(f"{icon} {_bold(action['name'])}: {_esc(action['reaction'])}{points}")
+            else:
+                lines.append(
+                    f"📣 {_bold(action['name'])}: {_esc(action['action'])} "
+                    f"<i>{_esc(action['reaction'])}</i>"
+                )
+        if actions:
+            lines.append("")
+        lines.append(f"💦 Попаданий: <b>{count}</b>")
+        return "\n".join(lines)
     if shoos:
         lines += [_shoo_line(shoo) for shoo in shoos[-SHOO_LOG_SIZE:]]
         lines.append("")
@@ -111,6 +143,19 @@ def flown(name: str, shoos: Sequence[ShooLine], count: int) -> str:
 
 def status_sitting(name: str, count: int) -> str:
     return f"🕊 Голубь {_bold(name)} сидит на подоконнике. Попаданий: <b>{count}</b>."
+
+
+def render_fortune(item, name: str = "") -> str:
+    titles = {
+        "classic": "🔮 Предсказание дня",
+        "omen": "🌤 Голубиная примета",
+        "scene": "🕊 Весть с подоконника",
+        "spread": "🔮 Расклад от голубя",
+        "chat": "🏘 Прогноз для района",
+        "serial": f"📜 Пророчество, часть {item.part}",
+    }
+    body = item.text.format(name=name) if item.format == "scene" else item.text
+    return f"<b>{_esc(titles[item.format])}</b>\n<i>{_esc(body)}</i>"
 
 
 def fortune(line: str) -> str:
@@ -139,13 +184,34 @@ def with_awards(text: str, names: list[str]) -> str:
     return "\n".join([text, *(f"🏅 Ачивка: {name}" for name in names)])
 
 
-def profile(name: str, balance: int, achievements: list[str], trophy_days: int) -> str:
+def profile(
+    name: str,
+    balance: int,
+    achievements: list[str],
+    trophy_days: int,
+    week_points: int | None = None,
+) -> str:
     earned = ", ".join(_esc(item) for item in achievements) if achievements else "пока нет"
     return "\n".join(
         [
             f"👤 {_bold(name)}",
             f"Очки: <b>{balance}</b>",
+            *([f"Очки за неделю: <b>{week_points}</b>"] if week_points is not None else []),
             f"🏅 Ачивки: {earned}",
             f"🏆 Золотой плевок: {trophy_days} дн.",
         ]
     )
+
+
+def week_stats(rows, quest: str, title: str | None) -> str:
+    lines = ["📊 <b>Рейтинг недели</b>"]
+    lines += (
+        [f"{i}. {_esc(name)} — {points}" for i, (name, points) in enumerate(rows, 1)]
+        if rows
+        else ["Пока пусто."]
+    )
+    if quest:
+        lines += ["", quest]
+    if title:
+        lines.append(f"🏅 Титул чата: {_esc(title)}")
+    return "\n".join(lines)

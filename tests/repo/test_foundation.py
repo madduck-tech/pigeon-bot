@@ -193,12 +193,12 @@ def _database_before_the_dovecote(path) -> None:
     old.close()
 
 
-def test_upgrade_resets_the_rating_and_forgets_usernames(tmp_path) -> None:
+def test_upgrade_preserves_the_rating_and_forgets_usernames(tmp_path) -> None:
     path = tmp_path / "old.db"
     _database_before_the_dovecote(path)
     store = Store(path)
-    assert store.balance(-1, 5) == 0
-    assert store.leaderboard(-1) == []
+    assert store.balance(-1, 5) == 7
+    assert store.leaderboard(-1) == [("Anna", 7)]
     assert store.member_name(-1, 5) == "Anna"
     assert store.achievements_of(-1, 5) == ["bullseye"]
     store.save_plan(-1, "2026-11-02", NOW, "pending")  # the old table has a postpones column
@@ -209,14 +209,14 @@ def test_upgrade_resets_the_rating_and_forgets_usernames(tmp_path) -> None:
     conn.close()
 
 
-def test_rating_is_reset_only_once(tmp_path) -> None:
+def test_rating_is_preserved_on_restart(tmp_path) -> None:
     path = tmp_path / "old.db"
     _database_before_the_dovecote(path)
     store = Store(path)
     store.add_hit(-1, 1, 5, NOW, 1)
     store.close()
     store = Store(path)
-    assert store.balance(-1, 5) == 1
+    assert store.balance(-1, 5) == 8
     store.close()
 
 

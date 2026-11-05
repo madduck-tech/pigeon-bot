@@ -182,7 +182,12 @@ async def test_pause_rejects_other_arguments(harness, store) -> None:
 async def test_fortune_once_a_day_as_a_reply(harness) -> None:
     await harness.command("/pigeon fortune", user_id=USER)
     first = harness.session.calls[-1]
-    assert first.text in {texts.fortune(line) for line in CONTENT.fortunes}
+    assert first.text in {
+        texts.render_fortune(line, name)
+        for line in CONTENT.fortunes
+        if line.format != "serial"
+        for name in CONTENT.names
+    }
     assert first.reply_parameters is not None or first.reply_to_message_id is not None
     await harness.command("/pigeon fortune", user_id=USER)
     assert harness.session.said()[-1] == texts.FORTUNE_ALREADY
@@ -218,14 +223,14 @@ async def test_stats_show_the_trophy_and_rating(harness, store, clock) -> None:
     event = game.arrive(store, clock, CHAT)
     game.hit(store, clock, CHAT, event.id, ADMIN, "Anna")
     clock.set(clock.now() + timedelta(days=3))
-    await harness.command("/pigeon stats")
+    await harness.command("/pigeon stats all")
     text = harness.session.said()[-1]
     assert "Золотой плевок: <b>Anna</b> (держит 3 дн.)" in text
     assert "1. Anna — 1" in text
 
 
 async def test_stats_in_a_new_chat(harness) -> None:
-    await harness.command("/pigeon stats")
+    await harness.command("/pigeon stats all")
     assert "пока никто не попадал" in harness.session.said()[-1]
 
 
@@ -270,7 +275,7 @@ async def test_status_of_an_arrival_from_before_the_dovecote(harness, store, clo
 async def test_hit_updates_the_count_and_keeps_the_phrase_and_buttons(harness, store, clock):
     event = game.arrive(store, clock, CHAT, VISITOR)
     await harness.tap(f"pg:hit:{event.id}")
-    assert harness.session.toasts() == [texts.HIT_OK]
+    assert "+3" in harness.session.toasts()[0]
     edit = harness.session.edits()[-1]
     assert "Голубь <b>Гена</b> прилетел, курлык." in edit.text
     assert "Попаданий: <b>1</b>" in edit.text

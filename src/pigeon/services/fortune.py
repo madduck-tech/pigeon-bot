@@ -8,7 +8,9 @@ from datetime import datetime
 
 from pigeon.budget import limits
 from pigeon.clock import Clock
+from pigeon.content import Fortune
 from pigeon.repo.store import ChatSettings, Store
+from pigeon.services import fortune_decks
 
 HOURS_AFTER_QUIET = 1
 
@@ -26,12 +28,11 @@ def draw(
     store: Store,
     clock: Clock,
     rng: random.Random,
-    fortunes: Sequence[str],
+    fortunes: Sequence[Fortune],
     chat: ChatSettings,
     user_id: int,
+    names: Sequence[str] = ("Гена",),
 ) -> str | None:
     """A prediction, or None if the user already had one today."""
     local_day = limits.chat_local(chat, clock.now()).date().isoformat()
-    if not store.claim_fortune(chat.chat_id, user_id, local_day):
-        return None
-    return rng.choice(fortunes)
+    return fortune_decks.prepare(store, chat.chat_id, user_id, local_day, fortunes, names, rng)

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -36,6 +39,9 @@ CREATE TABLE IF NOT EXISTS events (
     message_id  INTEGER
 );
 CREATE INDEX IF NOT EXISTS events_chat_status ON events (chat_id, status);
+CREATE TABLE IF NOT EXISTS pigeon_decks (
+    chat_id INTEGER PRIMARY KEY, remaining_json TEXT NOT NULL, last_type TEXT
+);
 CREATE TABLE IF NOT EXISTS hits (
     event_id   INTEGER NOT NULL REFERENCES events (id),
     chat_id    INTEGER NOT NULL,
@@ -53,6 +59,10 @@ CREATE TABLE IF NOT EXISTS shoos (
     flew       INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     PRIMARY KEY (event_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS action_order (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, event_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL, kind TEXT NOT NULL, UNIQUE(event_id, user_id, kind)
 );
 CREATE TABLE IF NOT EXISTS points_ledger (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,6 +107,23 @@ CREATE TABLE IF NOT EXISTS fortunes (
     local_day TEXT NOT NULL,
     PRIMARY KEY (chat_id, user_id, local_day)
 );
+CREATE TABLE IF NOT EXISTS fortune_decks (
+    chat_id INTEGER NOT NULL, scope TEXT NOT NULL, owner_id INTEGER NOT NULL,
+    cycle INTEGER NOT NULL, remaining_json TEXT NOT NULL, forced_json TEXT NOT NULL,
+    last_fortune_id TEXT, known_json TEXT NOT NULL, PRIMARY KEY (chat_id, scope, owner_id)
+);
+CREATE TABLE IF NOT EXISTS quests (
+    chat_id INTEGER NOT NULL, week_key TEXT NOT NULL, quest_id TEXT NOT NULL,
+    status TEXT NOT NULL, completed_event_id INTEGER, PRIMARY KEY(chat_id, week_key)
+);
+CREATE TABLE IF NOT EXISTS quest_decks (
+    chat_id INTEGER PRIMARY KEY, remaining_json TEXT NOT NULL, last_quest_id TEXT
+);
+CREATE TABLE IF NOT EXISTS chat_titles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, quest_id TEXT NOT NULL,
+    title TEXT NOT NULL, week_key TEXT NOT NULL, awarded_at TEXT NOT NULL,
+    UNIQUE(chat_id, week_key)
+);
 CREATE TABLE IF NOT EXISTS daily_fortunes (
     chat_id   INTEGER NOT NULL,
     local_day TEXT NOT NULL,
@@ -113,6 +140,16 @@ MIGRATIONS = [
     ("events", "source", "TEXT NOT NULL DEFAULT 'manual'"),
     ("events", "pigeon_name", "TEXT"),
     ("events", "intro", "TEXT"),
+    ("events", "pigeon_type", "TEXT NOT NULL DEFAULT 'normal'"),
+    ("events", "type_state", "TEXT NOT NULL DEFAULT '{}'"),
+    ("hits", "outcome", "TEXT NOT NULL DEFAULT 'normal'"),
+    ("hits", "points", "INTEGER NOT NULL DEFAULT 1"),
+    ("hits", "reaction", "TEXT NOT NULL DEFAULT 'Попал!'"),
+    ("fortunes", "fortune_id", "TEXT"),
+    ("fortunes", "rendered_text", "TEXT"),
+    ("daily_fortunes", "fortune_id", "TEXT"),
+    ("daily_fortunes", "rendered_text", "TEXT"),
+    ("daily_fortunes", "sent_at", "TEXT"),
 ]
 
 # Rows for databases created before these tables existed. Safe to run on every start.
@@ -123,6 +160,43 @@ INSERT INTO trophy_log (chat_id, user_id, started_at)
 """
 
 DOVECOTE_VERSION = 1
+
+
+@dataclass(frozen=True)
+class PigeonDeck:
+    remaining: list[str]
+    last_type: str | None
+
+
+@dataclass(frozen=True)
+class QuestRecord:
+    chat_id: int
+    week_key: str
+    quest_id: str
+    status: str
+    completed_event_id: int | None
+
+
+@dataclass(frozen=True)
+class QuestDeck:
+    remaining: list[str]
+    last_quest_id: str | None
+
+
+@dataclass(frozen=True)
+class FortuneDeck:
+    cycle: int
+    remaining: list[str]
+    forced: list[str]
+    last_fortune_id: str | None
+    known: list[str]
+
+
+@dataclass(frozen=True)
+class FortuneIssue:
+    fortune_id: str | None
+    rendered_text: str | None
+    sent_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +219,8 @@ class Event:
     opened_at: datetime
     closes_at: datetime
     message_id: int | None
+    pigeon_type: str = "normal"
+    type_state: str = "{}"
 
 
 @dataclass(frozen=True)
@@ -193,6 +269,8 @@ def _event(row: sqlite3.Row) -> Event:
         opened_at=datetime.fromisoformat(row["opened_at"]),
         closes_at=datetime.fromisoformat(row["closes_at"]),
         message_id=row["message_id"],
+        pigeon_type=row["pigeon_type"],
+        type_state=row["type_state"],
     )
 
 
@@ -213,10 +291,27 @@ class Store:
         self._conn = sqlite3.connect(str(path))
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        old_daily = "sent_at" not in self._columns("daily_fortunes")
         for table, column, decl in MIGRATIONS:
             self._ensure_column(table, column, decl)
+        if old_daily:
+            with self._conn:
+                self._conn.execute("UPDATE daily_fortunes SET sent_at = local_day")
         self._conn.executescript(BACKFILL)
-        self._become_dovecote()
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO action_order (chat_id, event_id, user_id, kind) "
+                "SELECT chat_id, event_id, user_id, kind FROM ("
+                "SELECT chat_id, event_id, user_id, 'hit' AS kind, created_at FROM hits "
+                "UNION ALL SELECT chat_id, event_id, user_id, 'shoo', created_at FROM shoos) "
+                "ORDER BY created_at"
+            )
+        # Preserve all existing ledger entries during upgrades.
+        if self._conn.execute("PRAGMA user_version").fetchone()[0] < DOVECOTE_VERSION:
+            if "username" in self._columns("members"):
+                self._conn.execute("UPDATE members SET username = NULL")
+            self._conn.execute(f"PRAGMA user_version = {DOVECOTE_VERSION}")
+            self._conn.commit()
 
     def close(self) -> None:
         self._conn.close()
@@ -386,6 +481,26 @@ class Store:
         return {row["user_id"] for row in rows}
 
     # events
+    def get_pigeon_deck(self, chat_id: int) -> PigeonDeck | None:
+        row = self._conn.execute(
+            "SELECT remaining_json, last_type FROM pigeon_decks WHERE chat_id=?", (chat_id,)
+        ).fetchone()
+        return PigeonDeck(json.loads(row["remaining_json"]), row["last_type"]) if row else None
+
+    def save_pigeon_deck(self, chat_id: int, deck: PigeonDeck) -> None:
+        with self._write():
+            self._conn.execute(
+                "INSERT OR REPLACE INTO pigeon_decks VALUES (?, ?, ?)",
+                (chat_id, json.dumps(deck.remaining), deck.last_type),
+            )
+
+    def previous_pigeon_type(self, chat_id: int, event_id: int) -> str | None:
+        row = self._conn.execute(
+            "SELECT pigeon_type FROM events WHERE chat_id=? AND id<? ORDER BY id DESC LIMIT 1",
+            (chat_id, event_id),
+        ).fetchone()
+        return row["pigeon_type"] if row else None
+
     def open_event(
         self,
         chat_id: int,
@@ -394,13 +509,14 @@ class Store:
         source: str = "manual",
         pigeon_name: str | None = None,
         intro: str | None = None,
+        pigeon_type: str = "normal",
     ) -> int:
-        with self._conn:
+        with self._write():
             cur = self._conn.execute(
                 "INSERT INTO events "
-                "(chat_id, status, source, pigeon_name, intro, opened_at, closes_at) "
-                "VALUES (?, 'open', ?, ?, ?, ?, ?)",
-                (chat_id, source, pigeon_name, intro, _ts(now), _ts(closes_at)),
+                "(chat_id, status, source, pigeon_name, intro, opened_at, closes_at, pigeon_type) "
+                "VALUES (?, 'open', ?, ?, ?, ?, ?, ?)",
+                (chat_id, source, pigeon_name, intro, _ts(now), _ts(closes_at), pigeon_type),
             )
         return int(cur.lastrowid)
 
@@ -421,7 +537,7 @@ class Store:
         Returns False and keeps it if anyone already acted on it: then the message did reach
         the chat and only Telegram's response was lost.
         """
-        with self._conn:
+        with self._write():
             for table in ("hits", "shoos"):
                 acted = self._conn.execute(
                     f"SELECT 1 FROM {table} WHERE event_id = ? AND chat_id = ? LIMIT 1",
@@ -435,7 +551,7 @@ class Store:
         return True
 
     def close_event(self, event_id: int) -> None:
-        with self._conn:
+        with self._write():
             self._conn.execute("UPDATE events SET status = 'closed' WHERE id = ?", (event_id,))
 
     def set_event_message(self, event_id: int, message_id: int) -> None:
@@ -460,7 +576,7 @@ class Store:
 
     def hit_count(self, event_id: int) -> int:
         row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM hits WHERE event_id = ?", (event_id,)
+            "SELECT COUNT(*) AS n FROM hits WHERE event_id = ? AND points > 0", (event_id,)
         ).fetchone()
         return int(row["n"])
 
@@ -489,22 +605,41 @@ class Store:
 
     # hits and points
     def add_hit(
-        self, chat_id: int, event_id: int, user_id: int, now: datetime, points: int
+        self,
+        chat_id: int,
+        event_id: int,
+        user_id: int,
+        now: datetime,
+        points: int,
+        outcome: str = "normal",
+        reaction: str = "Попал!",
     ) -> bool:
         """Record a hit and its points atomically. Returns False if the user already hit."""
-        with self._conn:
+        with self._write():
             cur = self._conn.execute(
-                "INSERT OR IGNORE INTO hits (event_id, chat_id, user_id, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (event_id, chat_id, user_id, _ts(now)),
+                "INSERT OR IGNORE INTO hits "
+                "(event_id, chat_id, user_id, created_at, points, outcome, reaction) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (event_id, chat_id, user_id, _ts(now), points, outcome, reaction),
             )
             if cur.rowcount == 0:
                 return False
             self._conn.execute(
-                "INSERT INTO points_ledger (chat_id, user_id, delta, reason, ref_id, created_at) "
-                "VALUES (?, ?, ?, 'hit', ?, ?)",
-                (chat_id, user_id, points, event_id, _ts(now)),
+                "INSERT INTO action_order (chat_id, event_id, user_id, kind) "
+                "VALUES (?, ?, ?, 'hit')",
+                (chat_id, event_id, user_id),
             )
+            if outcome == "cap_knocked":
+                self._conn.execute(
+                    "UPDATE events SET type_state=? WHERE id=?", ('{"cap_knocked": true}', event_id)
+                )
+            if points > 0:
+                self._conn.execute(
+                    "INSERT INTO points_ledger "
+                    "(chat_id, user_id, delta, reason, ref_id, created_at) "
+                    "VALUES (?, ?, ?, 'hit', ?, ?)",
+                    (chat_id, user_id, points, event_id, _ts(now)),
+                )
         return True
 
     def balance(self, chat_id: int, user_id: int) -> int:
@@ -544,6 +679,12 @@ class Store:
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (event_id, chat_id, user_id, action, reaction, int(flew), _ts(now)),
             )
+            if cur.rowcount:
+                self._conn.execute(
+                    "INSERT INTO action_order (chat_id, event_id, user_id, kind) "
+                    "VALUES (?, ?, ?, 'shoo')",
+                    (chat_id, event_id, user_id),
+                )
         return cur.rowcount > 0
 
     def shoo_count(self, chat_id: int, event_id: int) -> int:
@@ -566,6 +707,26 @@ class Store:
             Shoo(row["name"], row["action"], row["reaction"], bool(row["flew"])) for row in rows
         ]
 
+    def actions_of(self, chat_id: int, event_id: int) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT a.id, a.kind, COALESCE(m.display_name, '?') AS name, "
+            "COALESCE(h.reaction, s.reaction) AS reaction, COALESCE(h.points, 0) AS points, "
+            "COALESCE(s.action, '') AS action FROM action_order a "
+            "LEFT JOIN members m ON m.chat_id=a.chat_id AND m.user_id=a.user_id "
+            "LEFT JOIN hits h ON a.kind='hit' AND h.event_id=a.event_id AND h.user_id=a.user_id "
+            "LEFT JOIN shoos s ON a.kind='shoo' AND s.event_id=a.event_id AND s.user_id=a.user_id "
+            "WHERE a.chat_id=? AND a.event_id=? ORDER BY a.id",
+            (chat_id, event_id),
+        ).fetchall()
+        return [dict(row) for row in rows][-3:]
+
+    def hit_result(self, chat_id: int, event_id: int, user_id: int) -> tuple[str, int]:
+        row = self._conn.execute(
+            "SELECT reaction, points FROM hits WHERE chat_id=? AND event_id=? AND user_id=?",
+            (chat_id, event_id, user_id),
+        ).fetchone()
+        return row["reaction"], row["points"]
+
     def scares(self, chat_id: int, user_id: int) -> int:
         """How many pigeons this user has scared off."""
         row = self._conn.execute(
@@ -578,7 +739,8 @@ class Store:
     def hits_in_last_arrivals(self, chat_id: int, user_id: int, count: int) -> int:
         """How many of the chat's last `count` arrivals this user hit."""
         row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM hits WHERE chat_id = ? AND user_id = ? AND event_id IN "
+            "SELECT COUNT(*) AS n FROM hits WHERE chat_id = ? AND user_id = ? "
+            "AND points > 0 AND event_id IN "
             "(SELECT id FROM events WHERE chat_id = ? ORDER BY id DESC LIMIT ?)",
             (chat_id, user_id, chat_id, count),
         ).fetchone()
@@ -588,7 +750,9 @@ class Store:
         """On how many arrivals this user was the first to hit."""
         row = self._conn.execute(
             "SELECT COUNT(*) AS n FROM hits AS h WHERE h.chat_id = ? AND h.user_id = ? "
-            "AND h.rowid = (SELECT MIN(rowid) FROM hits WHERE event_id = h.event_id)",
+            "AND h.points > 0 "
+            "AND h.rowid = (SELECT MIN(rowid) FROM hits WHERE event_id = h.event_id "
+            "AND points > 0)",
             (chat_id, user_id),
         ).fetchone()
         return int(row["n"])
@@ -612,28 +776,248 @@ class Store:
         return [row["code"] for row in rows]
 
     # fortunes
-    def claim_fortune(self, chat_id: int, user_id: int, local_day: str) -> bool:
-        """Take today's prediction. False if the user already had one."""
-        with self._conn:
-            cur = self._conn.execute(
-                "INSERT OR IGNORE INTO fortunes (chat_id, user_id, local_day) VALUES (?, ?, ?)",
-                (chat_id, user_id, local_day),
-            )
-        return cur.rowcount > 0
+    @contextmanager
+    def _write(self) -> Iterator[None]:
+        """Commit standalone writes, or join an existing service transaction."""
+        if self._conn.in_transaction:
+            yield
+        else:
+            with self._conn:
+                yield
 
-    def claim_daily_fortune(self, chat_id: int, local_day: str) -> bool:
-        """Take today's post for the chat. False if it already went out."""
-        with self._conn:
-            cur = self._conn.execute(
-                "INSERT OR IGNORE INTO daily_fortunes (chat_id, local_day) VALUES (?, ?)",
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Serialize a read-modify-write operation and commit or roll it back together."""
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            self._conn.rollback()
+            raise
+        else:
+            self._conn.commit()
+
+    def fortune_transaction(self):
+        """Compatibility alias for the fortune service."""
+        return self.transaction()
+
+    def get_fortune_issue(self, chat_id: int, owner_id: int, local_day: str) -> FortuneIssue | None:
+        if owner_id == 0:
+            row = self._conn.execute(
+                "SELECT fortune_id, rendered_text, sent_at FROM daily_fortunes "
+                "WHERE chat_id=? AND local_day=?",
                 (chat_id, local_day),
-            )
-        return cur.rowcount > 0
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT fortune_id, rendered_text FROM fortunes "
+                "WHERE chat_id=? AND user_id=? AND local_day=?",
+                (chat_id, owner_id, local_day),
+            ).fetchone()
+        if row is None:
+            return None
+        return FortuneIssue(
+            row["fortune_id"], row["rendered_text"], row["sent_at"] if owner_id == 0 else None
+        )
 
-    def release_daily_fortune(self, chat_id: int, local_day: str) -> None:
-        """The post did not go out, so the day is free again."""
+    def get_fortune_deck(self, chat_id: int, scope: str, owner_id: int) -> FortuneDeck | None:
+        row = self._conn.execute(
+            "SELECT * FROM fortune_decks WHERE chat_id=? AND scope=? AND owner_id=?",
+            (chat_id, scope, owner_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return FortuneDeck(
+            row["cycle"],
+            json.loads(row["remaining_json"]),
+            json.loads(row["forced_json"]),
+            row["last_fortune_id"],
+            json.loads(row["known_json"]),
+        )
+
+    def fortune_history(self, chat_id: int, start: str, end: str) -> set[str]:
+        ids: set[str] = set()
+        for table in ("fortunes", "daily_fortunes"):
+            ids.update(
+                row[0]
+                for row in self._conn.execute(
+                    f"SELECT fortune_id FROM {table} WHERE chat_id=? "
+                    "AND local_day BETWEEN ? AND ? AND fortune_id IS NOT NULL",
+                    (chat_id, start, end),
+                )
+            )
+        return ids
+
+    def save_fortune_deck(self, chat_id: int, scope: str, owner_id: int, deck: FortuneDeck) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO fortune_decks VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                chat_id,
+                scope,
+                owner_id,
+                deck.cycle,
+                json.dumps(deck.remaining),
+                json.dumps(deck.forced),
+                deck.last_fortune_id,
+                json.dumps(deck.known),
+            ),
+        )
+
+    def save_fortune_issue(
+        self,
+        chat_id: int,
+        owner_id: int,
+        local_day: str,
+        fortune_id: str | None,
+        rendered_text: str,
+    ) -> None:
+        if owner_id == 0:
+            self._conn.execute(
+                "INSERT INTO daily_fortunes (chat_id, local_day, fortune_id, rendered_text) "
+                "VALUES (?, ?, ?, ?)",
+                (chat_id, local_day, fortune_id, rendered_text),
+            )
+        else:
+            self._conn.execute(
+                "INSERT INTO fortunes (chat_id, user_id, local_day, fortune_id, rendered_text) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (chat_id, owner_id, local_day, fortune_id, rendered_text),
+            )
+
+    def mark_daily_fortune_sent(self, chat_id: int, local_day: str, now: datetime) -> None:
         with self._conn:
             self._conn.execute(
-                "DELETE FROM daily_fortunes WHERE chat_id = ? AND local_day = ?",
-                (chat_id, local_day),
+                "UPDATE daily_fortunes SET sent_at=? WHERE chat_id=? AND local_day=?",
+                (_ts(now), chat_id, local_day),
             )
+
+    def week_leaderboard(
+        self, chat_id: int, start: datetime, end: datetime, limit: int = 10
+    ) -> list[tuple[str, int]]:
+        rows = self._conn.execute(
+            "SELECT COALESCE(m.display_name, '?') AS name, SUM(l.delta) AS total "
+            "FROM points_ledger l LEFT JOIN members m "
+            "ON m.chat_id=l.chat_id AND m.user_id=l.user_id "
+            "WHERE l.chat_id=? AND l.created_at>=? AND l.created_at<? "
+            "GROUP BY l.user_id ORDER BY total DESC, name ASC LIMIT ?",
+            (chat_id, _ts(start), _ts(end), limit),
+        ).fetchall()
+        return [(r["name"], int(r["total"])) for r in rows]
+
+    def week_balance(self, chat_id: int, user_id: int, start: datetime, end: datetime) -> int:
+        return int(
+            self._conn.execute(
+                "SELECT COALESCE(SUM(delta),0) FROM points_ledger WHERE chat_id=? AND user_id=? "
+                "AND created_at>=? AND created_at<?",
+                (chat_id, user_id, _ts(start), _ts(end)),
+            ).fetchone()[0]
+        )
+
+    # Weekly quests: write methods join an enclosing service transaction when present.
+    def get_quest(self, chat_id: int, week_key: str) -> QuestRecord | None:
+        row = self._conn.execute(
+            "SELECT * FROM quests WHERE chat_id=? AND week_key=?", (chat_id, week_key)
+        ).fetchone()
+        return QuestRecord(**dict(row)) if row else None
+
+    def fail_previous_quests(self, chat_id: int, week_key: str) -> None:
+        with self._write():
+            self._conn.execute(
+                "UPDATE quests SET status='failed' "
+                "WHERE chat_id=? AND week_key<? AND status='active'",
+                (chat_id, week_key),
+            )
+
+    def create_quest(self, chat_id: int, week_key: str, quest_id: str) -> QuestRecord:
+        with self._write():
+            self._conn.execute(
+                "INSERT INTO quests VALUES (?,?,?,'active',NULL)", (chat_id, week_key, quest_id)
+            )
+        return QuestRecord(chat_id, week_key, quest_id, "active", None)
+
+    def get_quest_deck(self, chat_id: int) -> QuestDeck | None:
+        row = self._conn.execute(
+            "SELECT remaining_json, last_quest_id FROM quest_decks WHERE chat_id=?", (chat_id,)
+        ).fetchone()
+        return QuestDeck(json.loads(row["remaining_json"]), row["last_quest_id"]) if row else None
+
+    def save_quest_deck(self, chat_id: int, deck: QuestDeck) -> None:
+        with self._write():
+            self._conn.execute(
+                "INSERT OR REPLACE INTO quest_decks VALUES (?,?,?)",
+                (chat_id, json.dumps(deck.remaining), deck.last_quest_id),
+            )
+
+    def complete_quest(
+        self, chat_id: int, week_key: str, event_id: int, title: str, now: datetime
+    ) -> bool:
+        """Complete an active quest and award its title in the same transaction."""
+        with self._write():
+            row = self.get_quest(chat_id, week_key)
+            if row is None or row.status != "active":
+                return False
+            updated = self._conn.execute(
+                "UPDATE quests SET status='completed', completed_event_id=? "
+                "WHERE chat_id=? AND week_key=? AND status='active'",
+                (event_id, chat_id, week_key),
+            )
+            if not updated.rowcount:
+                return False
+            self._conn.execute(
+                "INSERT OR IGNORE INTO chat_titles (chat_id,quest_id,title,week_key,awarded_at) "
+                "VALUES (?,?,?,?,?)",
+                (chat_id, row.quest_id, title, week_key, _ts(now)),
+            )
+        return True
+
+    def latest_chat_title(self, chat_id: int) -> str | None:
+        row = self._conn.execute(
+            "SELECT title FROM chat_titles WHERE chat_id=? ORDER BY id DESC LIMIT 1", (chat_id,)
+        ).fetchone()
+        return str(row[0]) if row else None
+
+    def successful_hits_in_period(self, chat_id: int, start: datetime, end: datetime) -> int:
+        return int(
+            self._conn.execute(
+                "SELECT COUNT(*) FROM hits WHERE chat_id=? AND created_at>=? "
+                "AND created_at<? AND points>0",
+                (chat_id, _ts(start), _ts(end)),
+            ).fetchone()[0]
+        )
+
+    def max_hit_participants(self, chat_id: int, start: datetime, end: datetime) -> int:
+        return int(
+            self._conn.execute(
+                "SELECT COALESCE(MAX(n),0) FROM (SELECT COUNT(DISTINCT user_id) n FROM hits "
+                "WHERE chat_id=? AND created_at>=? AND created_at<? AND points>0 "
+                "GROUP BY event_id)",
+                (chat_id, _ts(start), _ts(end)),
+            ).fetchone()[0]
+        )
+
+    def max_shoo_participants(self, chat_id: int, start: datetime, end: datetime) -> int:
+        return int(
+            self._conn.execute(
+                "SELECT COALESCE(MAX(n),0) FROM (SELECT COUNT(DISTINCT user_id) n FROM shoos "
+                "WHERE chat_id=? AND created_at>=? AND created_at<? GROUP BY event_id)",
+                (chat_id, _ts(start), _ts(end)),
+            ).fetchone()[0]
+        )
+
+    def max_hits_before_flee(self, chat_id: int, start: datetime, end: datetime) -> int:
+        # Action order disambiguates hits and shoos with the same timestamp.
+        return int(
+            self._conn.execute(
+                """SELECT COALESCE(MAX(n),0) FROM (
+                SELECT COUNT(DISTINCT h.user_id) n FROM shoos s
+                JOIN action_order sa ON sa.event_id=s.event_id AND sa.user_id=s.user_id
+                    AND sa.kind='shoo'
+                JOIN hits h ON h.event_id=s.event_id AND h.points>0
+                JOIN action_order ha ON ha.event_id=h.event_id AND ha.user_id=h.user_id
+                    AND ha.kind='hit' AND ha.id<sa.id
+                WHERE s.chat_id=? AND s.created_at>=? AND s.created_at<? AND s.flew=1
+                GROUP BY s.event_id
+            )""",
+                (chat_id, _ts(start), _ts(end)),
+            ).fetchone()[0]
+        )
