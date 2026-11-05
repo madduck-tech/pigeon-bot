@@ -17,7 +17,7 @@ from pigeon.clock import Clock
 from pigeon.content import Content
 from pigeon.render import texts
 from pigeon.repo.store import Store
-from pigeon.services import achievements, fortune, game
+from pigeon.services import achievements, fortune, game, weekly
 from pigeon.services.shoo import ShooOutcome, shoo
 from pigeon.telegram.messages import (
     TelegramArrivalSender,
@@ -119,37 +119,61 @@ def build_router(store: Store, clock: Clock, content: Content, rng: random.Rando
                     store.balance(chat_id, user_id),
                     award_names(store.achievements_of(chat_id, user_id)),
                     store.trophy_held(chat_id, user_id, clock.now()).days,
+                    store.week_balance(
+                        chat_id,
+                        user_id,
+                        *weekly.bounds(clock.now(), store.get_chat(chat_id).timezone)[1:],
+                    ),
                 )
             )
             return
 
         if sub == "fortune":
             line = fortune.draw(
-                store, clock, rng, content.fortunes, store.get_chat(chat_id), message.from_user.id
+                store,
+                clock,
+                rng,
+                content.fortunes,
+                store.get_chat(chat_id),
+                message.from_user.id,
+                content.names,
             )
-            await message.reply(texts.FORTUNE_ALREADY if line is None else texts.fortune(line))
+            await message.reply(texts.FORTUNE_ALREADY if line is None else line)
             return
 
         if sub == "stats":
-            trophy = store.get_trophy(chat_id)
-            await message.answer(
-                texts.stats(
+            if len(parts) > 1 and parts[1].lower() == "all":
+                trophy = store.get_trophy(chat_id)
+                result = texts.stats(
                     store.leaderboard(chat_id),
                     trophy.holder_name if trophy else None,
                     (clock.now() - trophy.since).days if trophy else 0,
                 )
-            )
+            else:
+                _, start, end = weekly.bounds(clock.now(), store.get_chat(chat_id).timezone)
+                result = texts.week_stats(
+                    store.week_leaderboard(chat_id, start, end),
+                    weekly.label(weekly.current(store, chat_id, clock.now(), content.quests)),
+                    weekly.last_title(store, chat_id),
+                )
+            await message.answer(result)
             return
 
         if sub == "arrive":
             if not await is_admin(message):
                 await message.answer(texts.ADMIN_ONLY)
                 return
-            event = game.arrive(store, clock, chat_id, game.pick_visitor(rng, content))
+            event = game.arrive(store, clock, chat_id, game.pick_visitor(rng, content), rng=rng)
             if event is None:
                 await message.answer(texts.ALREADY_SITTING)
                 return
-            message_id = await TelegramArrivalSender(message.bot).send_arrival(chat_id, event)
+            try:
+                message_id = await TelegramArrivalSender(
+                    message.bot, store, clock, content.quests
+                ).send_arrival(chat_id, event)
+            except Exception:
+                game.delete_unsent_event(store, chat_id, event.id)
+                raise
             store.set_event_message(event.id, message_id)
             return
 
@@ -168,17 +192,32 @@ def build_router(store: Store, clock: Clock, content: Content, rng: random.Rando
         chat_id = callback.message.chat.id
         event_id = int(callback.data.rsplit(":", 1)[1])
         name = callback.from_user.full_name
-        outcome = game.hit(store, clock, chat_id, event_id, callback.from_user.id, name)
+        outcome = game.hit(
+            store,
+            clock,
+            chat_id,
+            event_id,
+            callback.from_user.id,
+            name,
+            rng,
+            content.hits,
+            content.quests,
+        )
 
         if outcome is game.HitOutcome.HIT:
-            earned = achievements.after_hit(store, clock, chat_id, callback.from_user.id)
-            await callback.answer(texts.with_awards(texts.HIT_OK, award_names(earned)))
-            await _refresh_arrival(callback, store, event_id)
+            reaction, points = store.hit_result(chat_id, event_id, callback.from_user.id)
+            earned = (
+                achievements.after_hit(store, clock, chat_id, callback.from_user.id)
+                if points
+                else []
+            )
+            await callback.answer(texts.with_awards(f"{reaction} +{points}", award_names(earned)))
+            await _refresh_arrival(callback, store, event_id, clock, content.quests)
         elif outcome is game.HitOutcome.ALREADY:
             await callback.answer(texts.HIT_ALREADY)
         elif outcome is game.HitOutcome.CLOSED:
             await callback.answer(texts.HIT_CLOSED)
-            await _mark_flown(callback, store, event_id)
+            await _mark_flown(callback, store, event_id, clock, content.quests)
         else:
             await callback.answer(texts.HIT_NO_EVENT)
 
@@ -199,20 +238,21 @@ def build_router(store: Store, clock: Clock, content: Content, rng: random.Rando
             event_id,
             user_id,
             callback.from_user.full_name,
+            content.quests,
         )
 
         if outcome is ShooOutcome.STAYED:
             await callback.answer(texts.SHOO_STAYED)
-            await _refresh_arrival(callback, store, event_id)
+            await _refresh_arrival(callback, store, event_id, clock, content.quests)
         elif outcome is ShooOutcome.FLEW:
             earned = achievements.after_scare(store, clock, chat_id, user_id)
             await callback.answer(texts.with_awards(texts.SHOO_FLEW, award_names(earned)))
-            await _mark_flown(callback, store, event_id)
+            await _mark_flown(callback, store, event_id, clock, content.quests)
         elif outcome is ShooOutcome.ALREADY:
             await callback.answer(texts.SHOO_ALREADY)
         elif outcome is ShooOutcome.CLOSED:
             await callback.answer(texts.HIT_CLOSED)
-            await _mark_flown(callback, store, event_id)
+            await _mark_flown(callback, store, event_id, clock, content.quests)
         else:
             await callback.answer(texts.HIT_NO_EVENT)
 
@@ -284,20 +324,24 @@ def _quiet_bounds(args: list[str]) -> tuple[int, int] | None:
     return start, end
 
 
-async def _refresh_arrival(callback: CallbackQuery, store: Store, event_id: int) -> None:
+async def _refresh_arrival(
+    callback: CallbackQuery, store: Store, event_id: int, clock, quests
+) -> None:
     message = callback.message
     event = store.get_event(event_id)
     if message is None or event is None:
         return
-    await _edit(message, game.arrival_text(store, event), arrival_keyboard(event_id))
+    await _edit(
+        message, game.arrival_text(store, event, clock.now(), quests), arrival_keyboard(event_id)
+    )
 
 
-async def _mark_flown(callback: CallbackQuery, store: Store, event_id: int) -> None:
+async def _mark_flown(callback: CallbackQuery, store: Store, event_id: int, clock, quests) -> None:
     message = callback.message
     event = store.get_event(event_id)
     if message is None or event is None:
         return
-    await _edit(message, game.flown_text(store, event), None)
+    await _edit(message, game.flown_text(store, event, clock.now(), quests), None)
 
 
 async def _edit(message, text: str, keyboard) -> None:

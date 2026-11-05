@@ -14,9 +14,9 @@ from aiogram.exceptions import TelegramMigrateToChat
 
 from pigeon.budget import limits
 from pigeon.clock import Clock
-from pigeon.render import texts
+from pigeon.content import Fortune, Quest
 from pigeon.repo.store import ChatSettings, Store
-from pigeon.services import fortune
+from pigeon.services import fortune, fortune_decks, weekly
 
 log = logging.getLogger("pigeon.fortunes")
 
@@ -30,22 +30,30 @@ async def _post(
     clock: Clock,
     rng: random.Random,
     sender: FortuneSender,
-    lines: Sequence[str],
+    lines: Sequence[Fortune],
+    names: Sequence[str],
     chat: ChatSettings,
+    quests: tuple[Quest, ...],
 ) -> None:
     now = clock.now()
+    weekly.ensure(store, chat.chat_id, now, quests, rng)
     if not fortune.daily_due(chat, now):
         return
     local_day = limits.chat_local(chat, now).date().isoformat()
-    if not store.claim_daily_fortune(chat.chat_id, local_day):
+    if quests and limits.chat_local(chat, now).weekday() == 0:
+        with store.transaction():
+            issue = store.get_fortune_issue(chat.chat_id, 0, local_day)
+            if issue:
+                rendered = issue.rendered_text if issue.sent_at is None else None
+            else:
+                rendered = weekly.monday_text(store, chat.chat_id, now, quests)
+                store.save_fortune_issue(chat.chat_id, 0, local_day, None, rendered)
+    else:
+        rendered = fortune_decks.prepare(store, chat.chat_id, 0, local_day, lines, names, rng)
+    if rendered is None:
         return
-    try:
-        await sender.send_text(chat.chat_id, texts.daily_fortune(rng.choice(lines)))
-    except Exception:
-        # Nobody saw it, so the next tick tries again. If only the response was lost, the chat
-        # gets a second post, which is cheaper than losing the day to one failed connection.
-        store.release_daily_fortune(chat.chat_id, local_day)
-        raise
+    await sender.send_text(chat.chat_id, rendered)
+    store.mark_daily_fortune_sent(chat.chat_id, local_day, clock.now())
 
 
 async def tick(
@@ -53,12 +61,14 @@ async def tick(
     clock: Clock,
     rng: random.Random,
     sender: FortuneSender,
-    lines: Sequence[str],
+    lines: Sequence[Fortune],
+    names: Sequence[str] = ("Гена",),
+    quests: tuple[Quest, ...] = (),
 ) -> None:
     """Run one pass over every enabled chat. A failure in one chat does not stop the others."""
     for chat in store.enabled_chats():
         try:
-            await _post(store, clock, rng, sender, lines, chat)
+            await _post(store, clock, rng, sender, lines, names, chat, quests)
         except TelegramMigrateToChat as exc:
             log.warning("chat %s moved to %s", chat.chat_id, exc.migrate_to_chat_id)
             store.migrate_chat(chat.chat_id, exc.migrate_to_chat_id)

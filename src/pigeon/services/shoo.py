@@ -8,7 +8,7 @@ from enum import Enum
 from pigeon.clock import Clock
 from pigeon.content import ShooTexts
 from pigeon.repo.store import Store
-from pigeon.services import game
+from pigeon.services import game, weekly
 
 BASE_CHANCE = 0.20
 CHANCE_STEP = 0.15
@@ -35,13 +35,18 @@ def shoo(
     event_id: int,
     user_id: int,
     name: str,
+    quests=(),
 ) -> ShooOutcome:
     state, event = game.live_event(store, clock, chat_id, event_id)
     if state is game.EventState.NO_EVENT:
         return ShooOutcome.NO_EVENT
     if state is game.EventState.CLOSED or event is None:
         return ShooOutcome.CLOSED
-    flew = rng.random() < flee_chance(store.shoo_count(chat_id, event.id))
+    flew = rng.random() < min(
+        1.0,
+        flee_chance(store.shoo_count(chat_id, event.id))
+        + (0.15 if event.pigeon_type == "sleepy" else 0),
+    )
     reaction = rng.choice(lines.flew if flew else lines.stayed)
     store.upsert_member(chat_id, user_id, name)
     saved = store.add_shoo(
@@ -49,6 +54,7 @@ def shoo(
     )
     if not saved:
         return ShooOutcome.ALREADY
+    weekly.check(store, chat_id, event_id, clock.now(), quests)
     if not flew:
         return ShooOutcome.STAYED
     store.close_event(event.id)

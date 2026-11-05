@@ -37,18 +37,27 @@ def timezone_keyboard(timezones: dict[str, str]) -> InlineKeyboardMarkup:
 class TelegramArrivalSender:
     """Implements scheduler.arrivals.ArrivalSender on top of aiogram."""
 
-    def __init__(self, bot: Bot) -> None:
+    def __init__(self, bot: Bot, store=None, clock=None, quests=()) -> None:
         self._bot = bot
+        self._store = store
+        self._clock = clock
+        self._quests = quests
 
     async def send_arrival(self, chat_id: int, event: Event) -> int:
+        from pigeon.services import game
+
+        body = texts.arrival(
+            event.pigeon_name or texts.PIGEON_NAME,
+            event.intro or texts.ARRIVAL_INTRO,
+            [],
+            0,
+            event.pigeon_type,
+        )
+        if self._store is not None and self._clock is not None:
+            body = game.arrival_text(self._store, event, self._clock.now(), self._quests)
         sent = await self._bot.send_message(
             chat_id,
-            texts.arrival(
-                event.pigeon_name or texts.PIGEON_NAME,
-                event.intro or texts.ARRIVAL_INTRO,
-                [],
-                0,
-            ),
+            body,
             reply_markup=arrival_keyboard(event.id),
         )
         return sent.message_id

@@ -7,6 +7,7 @@ from aiogram.methods import SendMessage
 
 from pigeon import app
 from pigeon.clock import FixedClock
+from pigeon.content import Fortune, FortuneFormat
 from pigeon.render import texts
 from pigeon.repo.store import Store
 from pigeon.scheduler import fortunes
@@ -16,7 +17,7 @@ from rigged import CONTENT
 CHAT = -7101
 OTHER = -7102
 TZ = "Europe/Moscow"  # UTC+3, no DST
-LINES = ["а < б"]
+LINES = [Fortune("test", FortuneFormat.CLASSIC, "а < б")]
 NINE = datetime(2026, 11, 2, 6, 0, tzinfo=UTC)  # 09:00 Moscow, quiet hours just ended
 TEN = NINE + timedelta(hours=1)
 NIGHT = datetime(2026, 11, 2, 21, 0, tzinfo=UTC)  # 00:00 Moscow on the next day
@@ -52,7 +53,7 @@ async def test_comes_an_hour_after_quiet_hours(store) -> None:
     assert sender.sent == []
     clock.set(TEN)
     await _tick(store, clock, sender)
-    assert sender.sent == [(CHAT, texts.daily_fortune(LINES[0]))]
+    assert sender.sent == [(CHAT, texts.render_fortune(LINES[0]))]
     assert "а &lt; б" in sender.sent[0][1]  # sent as HTML, so content is escaped
 
 
@@ -156,9 +157,12 @@ async def test_migrated_chat_gets_the_post_at_its_new_id(store) -> None:
 
 def test_personal_fortune_is_a_separate_limit(store) -> None:
     clock = FixedClock(TEN)
-    assert store.claim_daily_fortune(CHAT, "2026-11-02")
+    with store.fortune_transaction():
+        store.save_fortune_issue(CHAT, 0, "2026-11-02", "other", "daily")
     chat = store.get_chat(CHAT)
-    assert fortune.draw(store, clock, random.Random(1), LINES, chat, 1) == LINES[0]
+    assert fortune.draw(store, clock, random.Random(1), LINES, chat, 1) == texts.render_fortune(
+        LINES[0]
+    )
 
 
 async def test_failed_arrivals_pass_does_not_stop_the_fortune(store, monkeypatch) -> None:

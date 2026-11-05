@@ -32,7 +32,9 @@ async def _scheduler_pass(store, clock, rng, sender, content: Content) -> None:
     """One pass. A failure here is logged: the task must outlive it, or everything stops."""
     for step in (
         lambda: arrivals.tick(store, clock, rng, sender, content),
-        lambda: fortunes.tick(store, clock, rng, sender, content.fortunes),
+        lambda: fortunes.tick(
+            store, clock, rng, sender, content.fortunes, content.names, content.quests
+        ),
     ):
         try:
             await step()
@@ -43,7 +45,7 @@ async def _scheduler_pass(store, clock, rng, sender, content: Content) -> None:
 async def _scheduler_loop(
     store: Store, clock: Clock, bot: Bot, rng: random.Random, content: Content
 ) -> None:
-    sender = TelegramArrivalSender(bot)
+    sender = TelegramArrivalSender(bot, store, clock, content.quests)
     while True:
         await _scheduler_pass(store, clock, rng, sender, content)
         await asyncio.sleep(SCHEDULER_INTERVAL_SECONDS)
