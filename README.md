@@ -107,11 +107,13 @@ python3 -m venv .venv
 | Документ | О чём |
 |---|---|
 | [docs/design.md](docs/design.md) | Дизайн и решения, источник правды о текущем поведении |
-| [ADR-0001](docs/adr/0001-diversify-pigeon-experience.md) | Решение о разнообразии предсказаний и прилётов |
+| [Реестр ADR](docs/adr/README.md) | Принятые решения, статусы и шаблон нового ADR |
+| [Процесс разработки](docs/development-flow.md) | Issues, ADR, PR, независимая проверка и релизы |
 | [Спецификация](docs/variety-spec.md) | Утверждённые правила механик и критерии приёмки |
 | [План разработки](docs/variety-plan.md) | Этапы реализации, тестирование, обновление и откат |
-| [docs/operations.md](docs/operations.md) | Запуск, настройка, обновление |
-| [docs/ideas.md](docs/ideas.md) | Идеи на будущее и закрытые механики |
-| [CLAUDE.md](CLAUDE.md) | Правила работы с кодом и ADR |
+| [docs/operations.md](docs/operations.md) | Запуск, настройка, обновление и релизы |
+| [GitHub Issues](https://github.com/madduck-tech/pigeon-bot/issues) | Идеи, баги и задачи |
+| [docs/ideas.md](docs/ideas.md) | Историческая справка о закрытых механиках |
+| [AGENTS.md](AGENTS.md) / [CLAUDE.md](CLAUDE.md) | Универсальная точка входа и правила работы для агентов |
 
 Тексты бота лежат в `content/`, новые имена, фразы и предсказания добавляются без правки кода.
