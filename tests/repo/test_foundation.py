@@ -44,6 +44,7 @@ def test_keeping_the_trophy_does_not_split_the_log(store) -> None:
 
 
 def test_migration_moves_everything(store, clock) -> None:
+    store.set_adult_enabled(CHAT, True)
     event = game.arrive(store, clock, CHAT)
     game.hit(store, clock, CHAT, event.id, 1, "Anna")
     store.add_shoo(CHAT, event.id, 2, "кыш", "сидит", False, NOW)
@@ -52,6 +53,7 @@ def test_migration_moves_everything(store, clock) -> None:
     assert store.migrate_chat(CHAT, NEW_CHAT) is True
 
     assert store.get_chat(CHAT) is None
+    assert store.get_chat(NEW_CHAT).adult_enabled is True
     assert store.balance(NEW_CHAT, 1) == 1
     assert store.get_trophy(NEW_CHAT).holder_user_id == 1
     assert store.current_open_event(NEW_CHAT).id == event.id
@@ -143,6 +145,7 @@ def test_old_database_is_upgraded_on_startup(tmp_path) -> None:
     store = Store(path)
     assert store.trophy_held(CHAT, 1, NOW) == timedelta(days=3)
     assert store.get_chat(CHAT).paused_until is None
+    assert store.get_chat(CHAT).adult_enabled is False
     assert store.get_event(1).pigeon_name is None
     store.close()
 

@@ -17,17 +17,18 @@ ADR-0002–0011 зарегистрированы ретроспективно 20
 
 | ADR | Решение | Дата | Статус | Связь |
 |---|---|---|---|---|
-| [0001](0001-diversify-pigeon-experience.md) | Разнообразие предсказаний и прилётов | 2026-11-05 | accepted | — |
+| [0001](0001-diversify-pigeon-experience.md) | Разнообразие предсказаний и прилётов | 2026-11-05 | accepted | Частично пересмотрен [0012](0012-adult-pigeon-gift.md) |
 | [0002](0002-focus-on-dovecote.md) | Фокус продукта на Голубятне | 2026-11-06 | accepted | Уточняется [0001](0001-diversify-pigeon-experience.md) |
 | [0003](0003-chat-isolation-and-migration.md) | Изоляция чатов и перенос `chat_id` без слияния | 2026-11-06 | accepted | — |
 | [0004](0004-privacy-and-minimal-data.md) | Приватность, минимум данных и отсутствие пингов | 2026-11-06 | accepted | — |
 | [0005](0005-layered-monolith-sqlite.md) | Слоистый монолит, SQLite и инжектируемые время и случайность | 2026-11-06 | accepted | — |
-| [0006](0006-single-message-arrival-loop.md) | Игровой цикл в одном редактируемом сообщении | 2026-11-06 | accepted | Детали развития в [0001](0001-diversify-pigeon-experience.md) |
+| [0006](0006-single-message-arrival-loop.md) | Игровой цикл в одном редактируемом сообщении | 2026-11-06 | accepted | Детали развития в [0001](0001-diversify-pigeon-experience.md); частично пересмотрен [0012](0012-adult-pigeon-gift.md) |
 | [0007](0007-local-schedule-and-noise-budget.md) | Локальное расписание, бюджет шума и повторы отправки | 2026-11-06 | accepted | Ограничения развития в [0001](0001-diversify-pigeon-experience.md) |
-| [0008](0008-group-commands-and-admin-setup.md) | Единая команда и явная административная настройка | 2026-11-06 | accepted | — |
+| [0008](0008-group-commands-and-admin-setup.md) | Единая команда и явная административная настройка | 2026-11-06 | accepted | Частично пересмотрен [0012](0012-adult-pigeon-gift.md) |
 | [0009](0009-yaml-content-startup-validation.md) | YAML-контент с проверкой при старте | 2026-11-06 | accepted | Схемы R1–R3 в [0001](0001-diversify-pigeon-experience.md) |
 | [0010](0010-html-rendering-and-escaping.md) | HTML-разметка и централизованное экранирование | 2026-11-06 | accepted | — |
 | [0011](0011-container-release-without-cd.md) | Проверенный Docker-образ и внешний деплой без CD | 2026-11-06 | accepted | — |
+| [0012](0012-adult-pigeon-gift.md) | Голубка с подарком 18+ по явному включению чата | 2026-11-06 | accepted | Частично пересматривает [0001](0001-diversify-pigeon-experience.md) §2, [0006](0006-single-message-arrival-loop.md) и [0008](0008-group-commands-and-admin-setup.md) |
 
 ## Новый документ
 

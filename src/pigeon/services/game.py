@@ -11,7 +11,7 @@ from pigeon.clock import Clock
 from pigeon.content import Content
 from pigeon.render import texts
 from pigeon.repo.store import Event, Store
-from pigeon.services import hit_outcomes, pigeon_types, weekly
+from pigeon.services import adult, hit_outcomes, pigeon_types, weekly
 
 ARRIVAL_WINDOW = timedelta(minutes=15)
 HIT_POINTS = 1
@@ -26,6 +26,7 @@ class HitOutcome(Enum):
     ALREADY = "already"
     CLOSED = "closed"
     NO_EVENT = "no_event"
+    BAD_AREA = "bad_area"
 
 
 class EventState(Enum):
@@ -57,6 +58,7 @@ def arrival_text(store: Store, event: Event, now=None, quests=()) -> str:
         store.hit_count(event.id),
         event.pigeon_type,
         store.actions_of(event.chat_id, event.id),
+        adult.target(event) if event.pigeon_type == "adult" else None,
     )
     quest = weekly.label(weekly.current(store, event.chat_id, now or event.opened_at, quests))
     return body + ("\n\n" + quest if quest else "")
@@ -67,6 +69,7 @@ def flown_text(store: Store, event: Event, now=None, quests=()) -> str:
         event.pigeon_name or texts.PIGEON_NAME,
         store.shoos_of(event.chat_id, event.id),
         store.hit_count(event.id),
+        event.pigeon_type,
     )
     quest = weekly.label(weekly.current(store, event.chat_id, now or event.opened_at, quests))
     return body + ("\n\n" + quest if quest else "")
@@ -94,6 +97,7 @@ def arrive(
     visitor: Visitor = DEFAULT_VISITOR,
     source: str = "manual",
     rng: random.Random | None = None,
+    dove_names: tuple[str, ...] = (),
 ) -> Event | None:
     """Open a new arrival. Returns None if a pigeon is already sitting in this chat.
 
@@ -111,11 +115,26 @@ def arrive(
             store.close_event(current.id)
         pigeon_type = "normal"
         if rng is not None:
-            pigeon_type, deck = pigeon_types.draw(rng, store.get_pigeon_deck(chat_id))
+            chat = store.get_chat(chat_id)
+            assert chat is not None
+            pigeon_type, deck = pigeon_types.draw(
+                rng, store.get_pigeon_deck(chat_id), chat.adult_enabled
+            )
             store.save_pigeon_deck(chat_id, deck)
+        if pigeon_type == "adult" and dove_names and rng is not None:
+            # A dove is female: her name comes from content/doves.yaml, not the pigeon list.
+            visitor = Visitor(rng.choice(dove_names), visitor.intro)
         window = timedelta(minutes=5) if pigeon_type == "golden" else ARRIVAL_WINDOW
+        type_state = adult.initial_state(rng) if pigeon_type == "adult" and rng else "{}"
         event_id = store.open_event(
-            chat_id, now, now + window, source, visitor.name, visitor.intro, pigeon_type
+            chat_id,
+            now,
+            now + window,
+            source,
+            visitor.name,
+            visitor.intro,
+            pigeon_type,
+            type_state,
         )
     event = store.get_event(event_id)
     assert event is not None
@@ -147,6 +166,7 @@ def hit(
     rng: random.Random | None = None,
     lines: dict[str, tuple[str, ...]] | None = None,
     quests=(),
+    area: str | None = None,
 ) -> HitOutcome:
     """Register a hit by a user on an arrival. One hit per user per arrival.
 
@@ -157,20 +177,34 @@ def hit(
         return HitOutcome.NO_EVENT
     if state is EventState.CLOSED or event is None:
         return HitOutcome.CLOSED
+    is_adult = event.pigeon_type == "adult"
+    if is_adult != (area is not None) or (area is not None and area not in adult.AREAS):
+        return HitOutcome.BAD_AREA
     now = clock.now()
     store.upsert_member(chat_id, user_id, name)
-    # Serialize reading the shared cap state with saving the attempt.
+    # Serialize reading the shared type state with saving the attempt.
     with store.transaction():
         current = store.get_event(event.id)
         assert current is not None
-        if rng is not None and lines is not None:
+        if is_adult:
+            success = area == adult.target(current)
+            outcome = hit_outcomes.Outcome.NORMAL if success else hit_outcomes.Outcome.MISS
+            points = int(success)
+            if rng is not None and lines is not None:
+                reaction = rng.choice(lines[outcome])
+            else:
+                reaction = texts.HIT_FALLBACK if success else texts.MISS_FALLBACK
+            result = hit_outcomes.Result(outcome, points, reaction)
+        elif rng is not None and lines is not None:
             result = hit_outcomes.roll(rng, lines, current.pigeon_type, current.type_state != "{}")
         else:
-            result = hit_outcomes.Result(hit_outcomes.Outcome.NORMAL, 1, "Попал!")
+            result = hit_outcomes.Result(hit_outcomes.Outcome.NORMAL, 1, texts.HIT_FALLBACK)
         if not store.add_hit(
             chat_id, event.id, user_id, now, result.points, result.outcome, result.reaction
         ):
             return HitOutcome.ALREADY
+        if is_adult and result.points > 0:
+            adult.assign_gift(store, chat_id, event.id, user_id)
     weekly.check(store, chat_id, event_id, now, quests)
     points = result.points
     if points > 0 and store.hit_count(event.id) == 1:

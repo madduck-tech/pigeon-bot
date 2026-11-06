@@ -4,6 +4,7 @@
 Статус: accepted  
 Supersedes: —  
 Superseded by: —  
+Частично пересмотрен: [ADR-0012](0012-adult-pigeon-gift.md) в части проверки открытости раунда: показ подарка `pg:gift` разрешён на закрытом раунде  
 Issue / PR: —
 
 ## Контекст

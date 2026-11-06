@@ -2,26 +2,30 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
+import re
 from datetime import timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from pigeon.budget import limits
 from pigeon.clock import Clock
 from pigeon.content import Content
 from pigeon.render import texts
 from pigeon.repo.store import Store
-from pigeon.services import achievements, fortune, game, weekly
+from pigeon.services import achievements, adult, fortune, game, weekly
+from pigeon.services.oboobs import OboobsClient
 from pigeon.services.shoo import ShooOutcome, shoo
 from pigeon.telegram.messages import (
     TelegramArrivalSender,
     arrival_keyboard,
+    gift_keyboard,
     timezone_keyboard,
 )
 
@@ -30,6 +34,8 @@ log = logging.getLogger("pigeon.handlers")
 GROUP_TYPES = {"group", "supergroup"}
 ADMIN_STATUSES = {"creator", "administrator"}
 PAUSE_DURATIONS = {"24h": timedelta(hours=24), "7d": timedelta(days=7)}
+EVENT_ID = re.compile(r"[0-9]{1,19}")
+MAX_EVENT_ID = 2**63 - 1  # SQLite INTEGER
 
 
 def _valid_timezone(name: str) -> bool:
@@ -41,8 +47,11 @@ def _valid_timezone(name: str) -> bool:
     return True
 
 
-def build_router(store: Store, clock: Clock, content: Content, rng: random.Random) -> Router:
+def build_router(
+    store: Store, clock: Clock, content: Content, rng: random.Random, gift_provider=None
+) -> Router:
     router = Router(name="pigeon")
+    gift_provider = gift_provider or OboobsClient()
 
     def award_names(codes: list[str]) -> list[str]:
         # Achievements of closed mechanics stay in old databases but have no text any more.
@@ -90,6 +99,18 @@ def build_router(store: Store, clock: Clock, content: Content, rng: random.Rando
 
         if not store.is_enabled(chat_id):
             await message.answer(texts.NOT_ENABLED)
+            return
+
+        if sub == "adult":
+            if not await is_admin(message):
+                await message.answer(texts.ADMIN_ONLY)
+                return
+            if len(parts) != 2 or parts[1].lower() not in {"on", "off"}:
+                await message.answer(texts.ADULT_BAD)
+                return
+            enabled = parts[1].lower() == "on"
+            store.set_adult_enabled(chat_id, enabled)
+            await message.answer(texts.ADULT_ON if enabled else texts.ADULT_OFF)
             return
 
         if sub == "quiet":
@@ -163,7 +184,14 @@ def build_router(store: Store, clock: Clock, content: Content, rng: random.Rando
             if not await is_admin(message):
                 await message.answer(texts.ADMIN_ONLY)
                 return
-            event = game.arrive(store, clock, chat_id, game.pick_visitor(rng, content), rng=rng)
+            event = game.arrive(
+                store,
+                clock,
+                chat_id,
+                game.pick_visitor(rng, content),
+                rng=rng,
+                dove_names=content.dove_names,
+            )
             if event is None:
                 await message.answer(texts.ALREADY_SITTING)
                 return
@@ -180,28 +208,28 @@ def build_router(store: Store, clock: Clock, content: Content, rng: random.Rando
         current = store.current_open_event(chat_id)
         if current is not None and clock.now() < current.closes_at:
             name = current.pigeon_name or texts.PIGEON_NAME
-            await message.answer(texts.status_sitting(name, store.hit_count(current.id)))
+            await message.answer(
+                texts.status_sitting(name, store.hit_count(current.id), current.pigeon_type)
+            )
         else:
             await message.answer(texts.STATUS_AWAY)
 
-    @router.callback_query(F.data.startswith("pg:hit:"))
-    async def hit_callback(callback: CallbackQuery) -> None:
-        if callback.message is None or callback.data is None:
+    async def handle_hit(callback: CallbackQuery, event_id: int, area: str | None = None) -> None:
+        if callback.message is None:
             await callback.answer()
             return
         chat_id = callback.message.chat.id
-        event_id = int(callback.data.rsplit(":", 1)[1])
-        name = callback.from_user.full_name
         outcome = game.hit(
             store,
             clock,
             chat_id,
             event_id,
             callback.from_user.id,
-            name,
+            callback.from_user.full_name,
             rng,
             content.hits,
             content.quests,
+            area,
         )
 
         if outcome is game.HitOutcome.HIT:
@@ -218,16 +246,85 @@ def build_router(store: Store, clock: Clock, content: Content, rng: random.Rando
         elif outcome is game.HitOutcome.CLOSED:
             await callback.answer(texts.HIT_CLOSED)
             await _mark_flown(callback, store, event_id, clock, content.quests)
+        elif outcome is game.HitOutcome.BAD_AREA:
+            await callback.answer(texts.HIT_BAD_AREA)
         else:
             await callback.answer(texts.HIT_NO_EVENT)
 
-    @router.callback_query(F.data.startswith("pg:shoo:"))
-    async def shoo_callback(callback: CallbackQuery) -> None:
-        if callback.message is None or callback.data is None:
-            await callback.answer()
+    @router.callback_query(F.data.startswith("pg:hit:"))
+    async def hit_callback(callback: CallbackQuery) -> None:
+        event_id = _parse_event_id(callback.data, "hit")
+        if event_id is None:
+            await callback.answer(texts.HIT_NO_EVENT)
+            return
+        await handle_hit(callback, event_id)
+
+    @router.callback_query(F.data.startswith("pg:aim:"))
+    async def aim_callback(callback: CallbackQuery) -> None:
+        parts = (callback.data or "").split(":")
+        event_id = _event_id(parts[2]) if len(parts) == 4 else None
+        if event_id is None:
+            await callback.answer(texts.HIT_NO_EVENT)
+            return
+        if parts[3] not in adult.AREAS:
+            await callback.answer(texts.HIT_BAD_AREA)
+            return
+        await handle_hit(callback, event_id, parts[3])
+
+    @router.callback_query(F.data.startswith("pg:gift:"))
+    async def gift_callback(callback: CallbackQuery) -> None:
+        # Telegram accepts one answer per callback query, so every path answers exactly once.
+        event_id = _parse_event_id(callback.data, "gift")
+        if callback.message is None or event_id is None:
+            await callback.answer(texts.HIT_NO_EVENT)
             return
         chat_id = callback.message.chat.id
-        event_id = int(callback.data.rsplit(":", 1)[1])
+        attempt_id = f"{rng.getrandbits(128):032x}"
+        start = adult.begin_gift(store, clock, chat_id, event_id, callback.from_user.id, attempt_id)
+        if start.outcome is not adult.GiftOutcome.START:
+            responses = {
+                adult.GiftOutcome.DISABLED: texts.GIFT_DISABLED,
+                adult.GiftOutcome.NOT_WINNER: texts.GIFT_NOT_WINNER,
+                adult.GiftOutcome.IN_PROGRESS: texts.GIFT_IN_PROGRESS,
+                adult.GiftOutcome.SENT: texts.GIFT_SENT,
+                adult.GiftOutcome.NO_EVENT: texts.HIT_NO_EVENT,
+            }
+            await callback.answer(responses[start.outcome])
+            return
+        try:
+            # The attempt ends before its lease does, so a retry never overlaps a live attempt.
+            async with asyncio.timeout(adult.GIFT_ATTEMPT_DEADLINE.total_seconds()):
+                image = await gift_provider.random_image()
+                sent = await callback.bot.send_photo(
+                    chat_id,
+                    photo=BufferedInputFile(image.data, filename=image.filename),
+                    caption=texts.GIFT_CAPTION,
+                    has_spoiler=True,
+                )
+        except Exception:
+            adult.finish_gift(store, chat_id, event_id, attempt_id, None)
+            log.warning("gift for event %s is unavailable", event_id, exc_info=True)
+            await _late_answer(callback, texts.GIFT_UNAVAILABLE, show_alert=True)
+            return
+        # Record the photo before answering: a failed late answer must not leave it "sending".
+        finished = adult.finish_gift(store, chat_id, event_id, attempt_id, sent.message_id)
+        await _late_answer(callback)
+        if not finished:
+            log.warning("gift for event %s finished under a superseded attempt", event_id)
+            return
+        event = store.get_event(event_id)
+        if event is not None and event.status == "open":
+            await _refresh_arrival(callback, store, event_id, clock, content.quests)
+        else:
+            await _mark_flown(callback, store, event_id, clock, content.quests)
+
+    @router.callback_query(F.data.startswith("pg:shoo:"))
+    async def shoo_callback(callback: CallbackQuery) -> None:
+        event_id = _parse_event_id(callback.data, "shoo")
+        if callback.message is None or event_id is None:
+            await callback.answer(texts.HIT_NO_EVENT)
+            return
+        chat_id = callback.message.chat.id
         user_id = callback.from_user.id
         outcome = shoo(
             store,
@@ -289,6 +386,29 @@ def build_router(store: Store, clock: Clock, content: Content, rng: random.Rando
     return router
 
 
+async def _late_answer(callback: CallbackQuery, text: str | None = None, **kwargs) -> None:
+    # The only answer to a gift tap comes after the download, when the query may be too old.
+    try:
+        await callback.answer(text, **kwargs)
+    except Exception:
+        # Never let the answer stop the redraw: the gift state is already saved.
+        log.warning("late answer to a gift tap failed", exc_info=True)
+
+
+def _event_id(value: str) -> int | None:
+    if EVENT_ID.fullmatch(value) is None or int(value) > MAX_EVENT_ID:
+        return None
+    return int(value)
+
+
+def _parse_event_id(data: str | None, action: str) -> int | None:
+    """Event id of `pg:<action>:<id>`, or None for anything malformed."""
+    parts = (data or "").split(":")
+    if len(parts) != 3 or parts[:2] != ["pg", action]:
+        return None
+    return _event_id(parts[2])
+
+
 async def _is_chat_admin(bot, chat_id: int, user_id: int) -> bool:
     member = await bot.get_chat_member(chat_id, user_id)
     return member.status in ADMIN_STATUSES
@@ -329,19 +449,27 @@ async def _refresh_arrival(
 ) -> None:
     message = callback.message
     event = store.get_event(event_id)
-    if message is None or event is None:
+    chat = store.get_chat(callback.message.chat.id) if callback.message else None
+    if message is None or event is None or chat is None:
         return
     await _edit(
-        message, game.arrival_text(store, event, clock.now(), quests), arrival_keyboard(event_id)
+        message,
+        game.arrival_text(store, event, clock.now(), quests),
+        arrival_keyboard(event, chat.adult_enabled),
     )
 
 
 async def _mark_flown(callback: CallbackQuery, store: Store, event_id: int, clock, quests) -> None:
     message = callback.message
     event = store.get_event(event_id)
-    if message is None or event is None:
+    chat = store.get_chat(callback.message.chat.id) if callback.message else None
+    if message is None or event is None or chat is None:
         return
-    await _edit(message, game.flown_text(store, event, clock.now(), quests), None)
+    await _edit(
+        message,
+        game.flown_text(store, event, clock.now(), quests),
+        gift_keyboard(event, chat.adult_enabled),
+    )
 
 
 async def _edit(message, text: str, keyboard) -> None:

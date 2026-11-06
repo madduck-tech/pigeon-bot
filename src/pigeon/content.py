@@ -155,6 +155,7 @@ class Content:
     timezones: dict[str, str]
     hits: dict[str, tuple[str, ...]] | None = None
     quests: tuple[Quest, ...] = ()
+    dove_names: tuple[str, ...] = ()  # female names for the adult arrival
 
 
 def _read(directory: Path, name: str):
@@ -196,6 +197,12 @@ def load_content(directory: Path) -> Content:
     names = _lines(_read(directory, "names.yaml"), "names.yaml")
     if len(set(names)) != len(names):
         raise ValueError("names.yaml must hold unique names")
+    dove_names = _lines(_read(directory, "doves.yaml"), "doves.yaml")
+    if len(set(dove_names)) != len(dove_names):
+        raise ValueError("doves.yaml must hold unique names")
+    shared = set(dove_names) & set(names)
+    if shared:
+        raise ValueError(f"doves.yaml shares names with names.yaml: {sorted(shared)}")
     shoos = _read(directory, "shoos.yaml") or {}
     raw_hits = _read(directory, "hits.yaml")
     hits = {}
@@ -217,4 +224,5 @@ def load_content(directory: Path) -> Content:
         timezones=_timezones(_read(directory, "timezones.yaml")),
         hits=hits,
         quests=_quests(_read(directory, "quests.yaml")),
+        dove_names=dove_names,
     )
