@@ -14,6 +14,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS chats (
     chat_id      INTEGER PRIMARY KEY,
     enabled      INTEGER NOT NULL DEFAULT 0,
+    adult_enabled INTEGER NOT NULL DEFAULT 0,
     timezone     TEXT NOT NULL DEFAULT 'UTC',
     quiet_start  INTEGER NOT NULL DEFAULT 23,
     quiet_end    INTEGER NOT NULL DEFAULT 9,
@@ -133,6 +134,7 @@ CREATE TABLE IF NOT EXISTS daily_fortunes (
 
 # Columns added after the first schema. Databases created earlier get them on startup.
 MIGRATIONS = [
+    ("chats", "adult_enabled", "INTEGER NOT NULL DEFAULT 0"),
     ("chats", "timezone", "TEXT NOT NULL DEFAULT 'UTC'"),
     ("chats", "quiet_start", "INTEGER NOT NULL DEFAULT 23"),
     ("chats", "quiet_end", "INTEGER NOT NULL DEFAULT 9"),
@@ -206,6 +208,7 @@ class ChatSettings:
     quiet_start: int
     quiet_end: int
     paused_until: datetime | None = None
+    adult_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -281,6 +284,7 @@ def _chat(row: sqlite3.Row) -> ChatSettings:
         quiet_start=row["quiet_start"],
         quiet_end=row["quiet_end"],
         paused_until=_opt_dt(row["paused_until"]),
+        adult_enabled=bool(row["adult_enabled"]),
     )
 
 
@@ -387,6 +391,12 @@ class Store:
             self._conn.execute(
                 "UPDATE chats SET quiet_start = ?, quiet_end = ? WHERE chat_id = ?",
                 (start, end, chat_id),
+            )
+
+    def set_adult_enabled(self, chat_id: int, enabled: bool) -> None:
+        with self._conn:
+            self._conn.execute(
+                "UPDATE chats SET adult_enabled = ? WHERE chat_id = ?", (int(enabled), chat_id)
             )
 
     def get_chat(self, chat_id: int) -> ChatSettings | None:
@@ -510,15 +520,32 @@ class Store:
         pigeon_name: str | None = None,
         intro: str | None = None,
         pigeon_type: str = "normal",
+        type_state: str = "{}",
     ) -> int:
         with self._write():
             cur = self._conn.execute(
                 "INSERT INTO events "
-                "(chat_id, status, source, pigeon_name, intro, opened_at, closes_at, pigeon_type) "
-                "VALUES (?, 'open', ?, ?, ?, ?, ?, ?)",
-                (chat_id, source, pigeon_name, intro, _ts(now), _ts(closes_at), pigeon_type),
+                "(chat_id, status, source, pigeon_name, intro, opened_at, closes_at, "
+                "pigeon_type, type_state) VALUES (?, 'open', ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    chat_id,
+                    source,
+                    pigeon_name,
+                    intro,
+                    _ts(now),
+                    _ts(closes_at),
+                    pigeon_type,
+                    type_state,
+                ),
             )
         return int(cur.lastrowid)
+
+    def update_event_type_state(self, chat_id: int, event_id: int, state: str) -> None:
+        with self._write():
+            self._conn.execute(
+                "UPDATE events SET type_state = ? WHERE chat_id = ? AND id = ?",
+                (state, chat_id, event_id),
+            )
 
     def get_event(self, event_id: int) -> Event | None:
         row = self._conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
@@ -528,6 +555,12 @@ class Store:
         row = self._conn.execute(
             "SELECT * FROM events WHERE chat_id = ? AND status = 'open' ORDER BY id DESC LIMIT 1",
             (chat_id,),
+        ).fetchone()
+        return _event(row) if row else None
+
+    def event_by_message(self, chat_id: int, message_id: int) -> Event | None:
+        row = self._conn.execute(
+            "SELECT * FROM events WHERE chat_id = ? AND message_id = ?", (chat_id, message_id)
         ).fetchone()
         return _event(row) if row else None
 

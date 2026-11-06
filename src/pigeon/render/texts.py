@@ -18,6 +18,7 @@ HELP = (
     "/pigeon setup — открыть голубятню, выбрать часовой пояс\n"
     "/pigeon quiet [с] [до] — тихие часы, например /pigeon quiet 23 9\n"
     "/pigeon pause 24h, 7d или off — пауза, голубятня ничего не пишет сама\n"
+    "/pigeon adult on или off — редкие голубки с подарком 18+\n"
     "/pigeon arrive — выпустить голубя\n\n"
     "<b>Как это работает</b>\n"
     "Голуби прилетают сами до трёх раз в неделю, в случайные дни, днём по часовому поясу чата. "
@@ -26,8 +27,8 @@ HELP = (
     "У голубей бывают кепка, сонный или золотой вид; золотой удваивает очки. "
     "Чем больше людей прогоняет голубя, тем вероятнее он улетит.\n\n"
     "<b>Приватность</b>\n"
-    "Текст сообщений чата бот не сохраняет. "
-    "Хранятся только id и имена игроков, время, очки и ачивки."
+    "Текст сообщений чата и изображения бот не сохраняет. "
+    "Хранятся настройки чата, id и имена игроков, время, игровые действия, очки и ачивки."
 )
 
 NOT_GROUP = "Голубятня работает только в групповых чатах."
@@ -65,6 +66,24 @@ SHOO_BUTTON = "📣 Прогнать"
 PAUSE_SET = "Пауза до {until} по часовому поясу чата. Голубятня сама ничего не пишет."
 PAUSE_OFF = "Пауза снята."
 PAUSE_BAD = "Пример: /pigeon pause 24h, /pigeon pause 7d или /pigeon pause off"
+ADULT_ON = (
+    "🔞 Режим 18+ включён. Иногда будет прилетать голубка с секретным подарком: "
+    "победитель сможет показать в чат откровенное фото под спойлером."
+)
+ADULT_OFF = "Режим 18+ выключен. Новых голубок с подарком и показов наград не будет."
+ADULT_BAD = "Укажи /pigeon adult on или /pigeon adult off"
+HIT_BAD_AREA = "Здесь нужно выбрать одну из кнопок с областями."
+HIT_FALLBACK = "Попал!"  # a hit without content lines, e.g. in tests
+MISS_FALLBACK = "Мимо!"
+AREA_NAMES = {"cap": "кепка", "wing": "крыло", "tail": "хвост"}
+AREA_BUTTONS = {"cap": "🧢 Кепка", "wing": "🪽 Крыло", "tail": "🪶 Хвост"}
+GIFT_BUTTON = "🎁 Показать подарок 18+"
+GIFT_CAPTION = "🔞 Подарок от голубки. Контент 18+."
+GIFT_NOT_WINNER = "Этот подарок достался другому участнику."
+GIFT_UNAVAILABLE = "Подарок потерялся по дороге. Попробуй ещё раз."
+GIFT_IN_PROGRESS = "Подарок уже загружается."
+GIFT_SENT = "Подарок уже показан."
+GIFT_DISABLED = "Режим 18+ уже выключен."
 FORTUNE_ALREADY = "Голубь уже всё сказал на сегодня. Приходи завтра."
 SHOO_LOG_SIZE = 3
 
@@ -95,8 +114,16 @@ def arrival(
     count: int,
     pigeon_type: str = "normal",
     actions: list[dict] | None = None,
+    target: str | None = None,
 ) -> str:
-    lines = ["🕊 " + _esc(intro).format(name=_bold(name))]
+    if pigeon_type == "adult":
+        area = AREA_NAMES[target]
+        lines = [
+            f"🕊 Голубка {_bold(name)} прилетела с секретным подарком. Курлык!",
+            f"🔞 Попади точно в область: <b>{area}</b>. Первый точный плевок получает подарок.",
+        ]
+    else:
+        lines = ["🕊 " + _esc(intro).format(name=_bold(name))]
     type_lines = {
         "capped": "🧢 В кепке. Первый плевок только собьёт её.",
         "sleepy": "💤 Сонный. Прогнать его проще.",
@@ -127,9 +154,12 @@ def arrival(
     return "\n".join(lines)
 
 
-def flown(name: str, shoos: Sequence[ShooLine], count: int) -> str:
+def flown(name: str, shoos: Sequence[ShooLine], count: int, pigeon_type: str = "normal") -> str:
     scared_by = next((shoo for shoo in shoos if shoo.flew), None)
-    lines = [f"🕊 Голубь {_bold(name)} улетел.", ""]
+    if pigeon_type == "adult":
+        lines = [f"🕊 Голубка {_bold(name)} улетела.", ""]
+    else:
+        lines = [f"🕊 Голубь {_bold(name)} улетел.", ""]
     if scared_by is None:
         lines += [f"💦 Попаданий: <b>{count}</b>", "💤 Улетел сам, никто не спугнул."]
     else:
@@ -141,7 +171,9 @@ def flown(name: str, shoos: Sequence[ShooLine], count: int) -> str:
     return "\n".join(lines)
 
 
-def status_sitting(name: str, count: int) -> str:
+def status_sitting(name: str, count: int, pigeon_type: str = "normal") -> str:
+    if pigeon_type == "adult":
+        return f"🕊 Голубка {_bold(name)} сидит на подоконнике. Попаданий: <b>{count}</b>."
     return f"🕊 Голубь {_bold(name)} сидит на подоконнике. Попаданий: <b>{count}</b>."
 
 
