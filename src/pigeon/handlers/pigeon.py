@@ -184,7 +184,14 @@ def build_router(
             if not await is_admin(message):
                 await message.answer(texts.ADMIN_ONLY)
                 return
-            event = game.arrive(store, clock, chat_id, game.pick_visitor(rng, content), rng=rng)
+            event = game.arrive(
+                store,
+                clock,
+                chat_id,
+                game.pick_visitor(rng, content),
+                rng=rng,
+                dove_names=content.dove_names,
+            )
             if event is None:
                 await message.answer(texts.ALREADY_SITTING)
                 return

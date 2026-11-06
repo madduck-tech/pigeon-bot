@@ -97,6 +97,7 @@ def arrive(
     visitor: Visitor = DEFAULT_VISITOR,
     source: str = "manual",
     rng: random.Random | None = None,
+    dove_names: tuple[str, ...] = (),
 ) -> Event | None:
     """Open a new arrival. Returns None if a pigeon is already sitting in this chat.
 
@@ -120,6 +121,9 @@ def arrive(
                 rng, store.get_pigeon_deck(chat_id), chat.adult_enabled
             )
             store.save_pigeon_deck(chat_id, deck)
+        if pigeon_type == "adult" and dove_names and rng is not None:
+            # A dove is female: her name comes from content/doves.yaml, not the pigeon list.
+            visitor = Visitor(rng.choice(dove_names), visitor.intro)
         window = timedelta(minutes=5) if pigeon_type == "golden" else ARRIVAL_WINDOW
         type_state = adult.initial_state(rng) if pigeon_type == "adult" and rng else "{}"
         event_id = store.open_event(

@@ -251,3 +251,18 @@ async def test_daily_plan_grants_trophy_holder_with_no_events(store, clock, send
     clock.set(MORNING + achievements.TROPHY_HOLDER_TIME)
     await _run(store, clock, sender)
     assert store.achievements_of(CHAT, 1) == [achievements.TROPHY_HOLDER]
+
+
+async def test_automatic_adult_arrival_takes_a_dove_name(store, clock, sender) -> None:
+    # Regression (manual smoke): the scheduler path must pass content.dove_names too.
+    from pigeon.repo.store import PigeonDeck
+
+    _enable(store)
+    store.set_adult_enabled(CHAT, True)
+    store.save_pigeon_deck(CHAT, PigeonDeck(["adult"], "normal"))
+    await _run(store, clock, sender)
+    clock.set(store.get_plan(CHAT, "2026-11-02").planned_at)
+    await _run(store, clock, sender)
+    event = store.get_event(sender.sent[0][1])
+    assert event.pigeon_type == "adult"
+    assert event.pigeon_name in CONTENT.dove_names

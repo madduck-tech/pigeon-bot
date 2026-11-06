@@ -598,6 +598,10 @@ async def test_adult_arrival_comes_from_deck_and_has_area_buttons(harness, store
     assert event.pigeon_type == "adult"
     call = harness.session.calls[-1]
     assert "Голубка" in call.text and adult.target(event) in adult.AREAS
+    # Regression (manual smoke): the dove used to get a male name such as «Эдик».
+    assert event.pigeon_name in CONTENT.dove_names
+    assert event.pigeon_name not in CONTENT.names
+    assert event.pigeon_name in call.text
     assert [b.callback_data for b in call.reply_markup.inline_keyboard[0]] == [
         f"pg:aim:{event.id}:cap",
         f"pg:aim:{event.id}:wing",

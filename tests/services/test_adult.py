@@ -210,3 +210,26 @@ def test_gift_is_scoped_and_disabled_without_losing_hit(store, clock):
         is adult.GiftOutcome.DISABLED
     )
     assert store.balance(CHAT, 2) == 1
+
+
+DOVES = ("Глаша", "Клава", "Люся")
+
+
+def test_adult_arrival_takes_a_dove_name_and_others_keep_the_visitor(store, clock):
+    visitor = game.Visitor("Эдик", "Голубь {name} прилетел.")
+    store.save_pigeon_deck(CHAT, PigeonDeck(["adult", "normal"], "normal"))
+    dove = game.arrive(store, clock, CHAT, visitor, rng=random.Random(5), dove_names=DOVES)
+    assert dove.pigeon_type == "adult"
+    assert dove.pigeon_name in DOVES
+    store.close_event(dove.id)
+    pigeon = game.arrive(store, clock, CHAT, visitor, rng=random.Random(5), dove_names=DOVES)
+    assert pigeon.pigeon_type == "normal"
+    assert pigeon.pigeon_name == "Эдик"
+    assert pigeon.intro == visitor.intro
+
+
+def test_adult_arrival_without_dove_names_keeps_the_old_behaviour(store, clock):
+    store.save_pigeon_deck(CHAT, PigeonDeck(["adult"], "normal"))
+    event = game.arrive(store, clock, CHAT, game.Visitor("Эдик", "x {name}"), rng=random.Random(5))
+    assert event.pigeon_type == "adult"
+    assert event.pigeon_name == "Эдик"

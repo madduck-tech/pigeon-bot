@@ -96,7 +96,13 @@ async def _tick_chat(
         return
 
     arrival = game.arrive(
-        store, clock, chat_id, game.pick_visitor(rng, content), source="auto", rng=rng
+        store,
+        clock,
+        chat_id,
+        game.pick_visitor(rng, content),
+        source="auto",
+        rng=rng,
+        dove_names=content.dove_names,
     )
     if arrival is None:
         return

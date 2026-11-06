@@ -75,3 +75,38 @@ def test_wrong_timezone_fails_at_startup(tmp_path) -> None:
     (tmp_path / "timezones.yaml").write_text("Москва: Europe/Mars\n", encoding="utf-8")
     with pytest.raises(Exception, match="Mars"):
         load_content(tmp_path)
+
+
+def test_dove_names_are_female_unique_and_separate_from_pigeon_names() -> None:
+    content = load_content(CONTENT)
+    assert content.dove_names
+    assert len(set(content.dove_names)) == len(content.dove_names)
+    assert not set(content.dove_names) & set(content.names)
+    assert "Эдик" not in content.dove_names
+
+
+def _content_copy(tmp_path):
+    for path in CONTENT.glob("*.yaml"):
+        (tmp_path / path.name).write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("doves", "error"),
+    [
+        ("[]\n", "doves.yaml"),
+        ("- Глаша\n- Глаша\n", "unique"),
+        ("- Глаша\n- Гена\n", "shares names"),
+    ],
+)
+def test_broken_dove_names_fail_at_startup(tmp_path, doves, error) -> None:
+    _content_copy(tmp_path)
+    (tmp_path / "doves.yaml").write_text(doves, encoding="utf-8")
+    with pytest.raises(ValueError, match=error):
+        load_content(tmp_path)
+
+
+def test_missing_dove_names_fail_at_startup(tmp_path) -> None:
+    _content_copy(tmp_path)
+    (tmp_path / "doves.yaml").unlink()
+    with pytest.raises(FileNotFoundError):
+        load_content(tmp_path)
