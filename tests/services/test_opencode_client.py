@@ -14,7 +14,10 @@ KEY = "sk-very-secret"
 
 
 def reply(text) -> dict:
-    return {"choices": [{"message": {"role": "assistant", "content": text}}]}
+    return {
+        "choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+        "usage": {"completion_tokens": 5, "completion_tokens_details": {"reasoning_tokens": 2}},
+    }
 
 
 @pytest.fixture
@@ -60,6 +63,8 @@ async def test_request_shape_and_reply(server) -> None:
         {"role": "user", "content": "USER"},
     ]
     assert body["max_tokens"] == opencode.MAX_TOKENS and body["stream"] is False
+    assert client.last_meta["finish_reason"] == "stop"
+    assert client.last_meta["usage"]["completion_tokens_details"]["reasoning_tokens"] == 2
 
 
 def _status(code):
