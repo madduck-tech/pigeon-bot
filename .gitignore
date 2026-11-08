@@ -17,3 +17,7 @@ CLAUDE.local.md
 
 # OS
 .DS_Store
+
+# Local test stand (docs/operations.md, «Тестовый стенд»)
+.env.stand
+stand-runs/

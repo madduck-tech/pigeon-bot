@@ -26,14 +26,14 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src", "tests"]
+pythonpath = ["src", "tests", "."]
 addopts = "-q"
 asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["src", "tests"]
+src = ["src", "tests", "."]
 extend-exclude = [".claude", ".agents", ".venv"]
 
 [tool.ruff.lint]
