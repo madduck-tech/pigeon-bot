@@ -23,6 +23,7 @@ from aiogram.dispatcher.event.bases import UNHANDLED
 from aiogram.methods import TelegramMethod
 from aiogram.types import Update
 
+import pigeon
 from pigeon.app import build_bot
 from pigeon.clock import SystemClock
 from pigeon.content import load_content
@@ -32,6 +33,8 @@ from tools.stand.config import StandConfig
 from tools.stand.recorder import Recorder, StandGuardError, plain
 
 REPO = Path(__file__).resolve().parents[2]
+# src/pigeon/__init__.py -> the working tree the bot code is imported from.
+PIGEON_TREE = Path(pigeon.__file__).resolve().parents[2]
 PROD_USERNAMES = frozenset({"golubinskity_bot"})
 ADMIN_STATUSES = ("creator", "administrator")
 # Telegram's service account behind every anonymous admin message.
@@ -318,6 +321,11 @@ class Stand:
         }
         return [
             {
+                "check": "the bot code and the harness come from the same working tree",
+                "ok": PIGEON_TREE == REPO,
+                "detail": None if PIGEON_TREE == REPO else "pigeon is imported from elsewhere",
+            },
+            {
                 "check": "every Bot API call succeeded or failed only as expected",
                 "ok": not unexpected,
                 "detail": unexpected or None,
@@ -380,7 +388,7 @@ class Stand:
         return ids
 
 
-NAME_KEYS = frozenset({"first_name", "last_name", "username", "title", "database"})
+NAME_KEYS = frozenset({"first_name", "last_name", "username", "title", "custom_title", "database"})
 
 
 def redact(value: Any, ids: dict[int, str], key: str | None = None) -> Any:
@@ -409,13 +417,39 @@ def chat_type_of(chat_id: int) -> str | None:
     return "group" if chat_id < 0 else None
 
 
-def revision() -> dict[str, Any]:
-    def git(*args: str) -> str:
-        return subprocess.run(
-            ["git", *args], cwd=REPO, capture_output=True, text=True, check=False
-        ).stdout.strip()
+def _git(tree: Path, *args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=tree, capture_output=True, text=True, check=False
+        )
+    except OSError:  # no git, or the tree is gone
+        return ""
+    return result.stdout.strip()
 
-    return {"commit": git("rev-parse", "HEAD") or None, "dirty": bool(git("status", "--porcelain"))}
+
+def revision() -> dict[str, Any]:
+    """The revision of the bot code that actually ran, and whether the harness is from it.
+
+    A shared virtualenv can import pigeon from another working tree than tools/.
+    """
+    bot_tree = PIGEON_TREE
+    return {
+        "commit": _git(bot_tree, "rev-parse", "HEAD") or None,
+        "dirty": bool(_git(bot_tree, "status", "--porcelain")),
+        "same_tree_as_harness": bot_tree == REPO,
+        "harness_commit": _git(REPO, "rev-parse", "HEAD") or None,
+    }
+
+
+def scrub(value: Any, secret: str) -> Any:
+    """A copy of value with the secret cut out of every string."""
+    if isinstance(value, dict):
+        return {k: scrub(v, secret) for k, v in value.items()}
+    if isinstance(value, list):
+        return [scrub(v, secret) for v in value]
+    if isinstance(value, str) and secret and secret in value:
+        return value.replace(secret, "<token>")
+    return value
 
 
 def new_bot(config: StandConfig) -> Bot:

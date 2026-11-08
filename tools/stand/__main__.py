@@ -9,11 +9,12 @@ import argparse
 import asyncio
 import logging
 import sys
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
 from tools.stand.config import StandConfig, StandConfigError, load_config
-from tools.stand.harness import Stand, new_bot
+from tools.stand.harness import Stand, new_bot, scrub
 from tools.stand.scenarios import SCENARIOS
 
 EXIT_PASSED, EXIT_FAILED, EXIT_REFUSED = 0, 1, 2
@@ -41,8 +42,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 async def run_scenario(config: StandConfig, name: str, bot=None) -> tuple[int, Path | None]:
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    run_dir = config.runs_dir / f"{stamp}-{name}"
+    run_dir = new_run_dir(config.runs_dir, name)
     stand = Stand(config, bot or new_bot(config), run_dir, name)
     code, error = EXIT_PASSED, None
     try:
@@ -57,12 +57,24 @@ async def run_scenario(config: StandConfig, name: str, bot=None) -> tuple[int, P
                 code, error = EXIT_FAILED, f"{type(exc).__name__}: {exc}"
     finally:
         await stand.close()
-    report = stand.report(error)
+    report = scrub(stand.report(error), config.token)
     if code == EXIT_PASSED and not report["passed"]:
         code = EXIT_FAILED
     path = stand.write_report(report)
     _print_summary(report, path)
     return code, path
+
+
+def new_run_dir(runs_dir: Path, name: str) -> Path:
+    """A folder no other run has: two runs started in the same second never share a base."""
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    while True:
+        run_dir = runs_dir / f"{stamp}-{name}-{uuid.uuid4().hex[:6]}"
+        try:
+            run_dir.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            continue
+        return run_dir
 
 
 def _print_summary(report: dict, path: Path) -> None:

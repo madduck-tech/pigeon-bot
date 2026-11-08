@@ -7,6 +7,7 @@ The environment wins over the file, so a one-off run can override a single value
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +25,7 @@ REQUIRED = {
     "MEMBER_ID": "user_id of a plain member: a second bot without admin rights",
 }
 INTEGERS = ("CHAT_ID", "ADMIN_ID", "MEMBER_ID")
+TOKEN_FORMAT = re.compile(r"[0-9]+:[A-Za-z0-9_-]+")
 
 
 class StandConfigError(Exception):
@@ -84,9 +86,17 @@ def load_config(
         except ValueError:
             raise StandConfigError(f"{PREFIX}{name} must be an integer id, got {raw!r}") from None
 
+    token = values[PREFIX + "TOKEN"].strip()
+    if TOKEN_FORMAT.fullmatch(token) is None:
+        # Never echo the value: it may be a real token with a typo.
+        raise StandConfigError(
+            f"{PREFIX}TOKEN does not look like a bot token (<bot id>:<secret>, no spaces "
+            "or comments on the line)"
+        )
+
     runs_dir = values.get(PREFIX + "RUNS_DIR", "").strip()
     return StandConfig(
-        token=values[PREFIX + "TOKEN"].strip(),
+        token=token,
         chat_id=ids["CHAT_ID"],
         admin_id=ids["ADMIN_ID"],
         member_id=ids["MEMBER_ID"],

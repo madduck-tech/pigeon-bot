@@ -4,8 +4,11 @@ through `python -m tools.stand`."""
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -17,8 +20,9 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.methods import AnswerCallbackQuery, SendMessage
 
 from tools.stand import __main__ as cli
+from tools.stand import harness
 from tools.stand.config import StandConfig, StandConfigError, load_config
-from tools.stand.harness import Stand
+from tools.stand.harness import Stand, redact
 from tools.stand.recorder import EXPECTED_ANSWER_ERROR, Recorder, StandGuardError
 
 TOKEN = "123456:SECRET-stand-token"
@@ -93,6 +97,9 @@ class FakeTelegram(BaseSession):
         if name == "setMyCommands":
             self.menus[method.scope.type] = [c.model_dump() for c in method.commands]
             return True
+        if name == "deleteMyCommands":
+            self.menus.pop(method.scope.type, None)
+            return True
         if name == "getMyCommands":
             return self.menus.get(method.scope.type, [])
         raise AssertionError(f"unexpected {name}")
@@ -116,6 +123,10 @@ def telegram() -> FakeTelegram:
 async def run(tmp_path, telegram, scenario=CURRENT):
     code, path = await cli.run_scenario(config(tmp_path), scenario, bot=fake_bot(telegram))
     return code, json.loads(path.read_text()), path
+
+
+def global_check(report, prefix: str) -> bool:
+    return next(c["ok"] for c in report["global_checks"] if c["check"].startswith(prefix))
 
 
 # --- config ------------------------------------------------------------------
@@ -301,7 +312,7 @@ async def test_another_answer_error_fails_the_run(tmp_path, telegram):
     code, report, _ = await run(tmp_path, telegram)
     assert code == 1
     assert "spit by the member" in report["summary"]["failed_steps"]
-    assert not report["global_checks"][0]["ok"]
+    assert not global_check(report, "every Bot API call")
 
 
 async def test_markup_rejected_by_telegram_fails_the_run(tmp_path, telegram):
@@ -333,3 +344,108 @@ async def test_commands_scenario_fails_clearly_without_menus(tmp_path, telegram)
     assert code == 1
     assert "ADR-0013" in report["steps"][-1]["error"]
     assert "sendMessage" not in telegram.methods
+
+
+# --- R1 regressions --------------------------------------------------------------
+
+
+async def test_runs_started_together_get_their_own_folder_and_database(tmp_path):
+    sessions = [FakeTelegram(), FakeTelegram()]
+    for session in sessions:
+        session.fail["answerCallbackQuery"] = QUERY_TOO_OLD
+    results = await asyncio.gather(
+        *(cli.run_scenario(config(tmp_path), CURRENT, bot=fake_bot(s)) for s in sessions)
+    )
+    assert [code for code, _ in results] == [0, 0]
+    folders = {path.parent for _, path in results}
+    assert len(folders) == 2
+    databases = {json.loads(path.read_text())["database"] for _, path in results}
+    assert len(databases) == 2
+
+
+def test_malformed_token_is_a_config_error_that_does_not_echo_it(tmp_path):
+    env = {
+        "PIGEON_STAND_CHAT_ID": str(CHAT),
+        "PIGEON_STAND_ADMIN_ID": "1",
+        "PIGEON_STAND_MEMBER_ID": "2",
+    }
+    for bad in ("123456:SECRET # the test bot", "not-a-token", "123456:"):
+        with pytest.raises(StandConfigError, match="does not look like a bot token") as exc:
+            load_config({**env, "PIGEON_STAND_TOKEN": bad}, None)
+        assert "SECRET" not in str(exc.value)
+
+
+async def test_token_in_an_error_never_reaches_stdout_or_reports(tmp_path, telegram, capsys):
+    telegram.fail["sendMessage"] = f"Bad Request: echo {TOKEN}"
+    code, report, path = await run(tmp_path, telegram)
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "<token>" in out
+    assert TOKEN not in out
+    assert TOKEN not in path.read_text()
+    assert TOKEN not in (path.parent / "report.public.json").read_text()
+
+
+def test_public_report_hides_custom_titles():
+    assert redact({"custom_title": "Owner nickname"}, {}) == {"custom_title": "<custom_title>"}
+
+
+async def test_bot_code_from_another_tree_fails_the_run(tmp_path, telegram, monkeypatch):
+    monkeypatch.setattr(harness, "PIGEON_TREE", tmp_path / "elsewhere")
+    code, report, _ = await run(tmp_path, telegram)
+    assert code == 1
+    assert report["revision"]["same_tree_as_harness"] is False
+    assert not global_check(report, "the bot code and the harness")
+
+
+def _fake_menus_module(publish_scopes):
+    """A stand-in for pigeon.telegram.commands that publishes to the given scopes."""
+    from aiogram.types import BotCommand
+
+    from tools.stand.scenarios.smoke import SCOPES
+
+    def menus():
+        common = [BotCommand(command="pigeon", description="status")]
+        return [
+            (SCOPES[0], common),
+            (SCOPES[1], common + [BotCommand(command="setup", description="setup")]),
+        ]
+
+    async def publish_menus(bot):
+        for scope, (_, commands) in zip(publish_scopes, menus(), strict=True):
+            await bot.set_my_commands(commands, scope=scope)
+
+    module = types.ModuleType("pigeon.telegram.commands")
+    module.menus, module.publish_menus = menus, publish_menus
+    return module, menus
+
+
+async def test_menus_left_by_an_earlier_run_cannot_hide_a_broken_publish(
+    tmp_path, telegram, monkeypatch
+):
+    from aiogram.types import BotCommandScopeDefault
+
+    module, menus = _fake_menus_module([BotCommandScopeDefault(), BotCommandScopeDefault()])
+    monkeypatch.setitem(sys.modules, "pigeon.telegram.commands", module)
+    # A previous run left exactly the expected menus in Telegram.
+    for scope, commands in menus():
+        telegram.menus[scope.type] = [c.model_dump() for c in commands]
+    code, report, _ = await run(tmp_path, telegram, "commands")
+    assert code == 1
+    failed = report["summary"]["failed_steps"]
+    assert "startup: publish the command menus" in failed
+    assert any(step.startswith("getMyCommands") for step in failed)
+
+
+async def test_commands_scenario_resets_then_checks_a_correct_publish(
+    tmp_path, telegram, monkeypatch
+):
+    from tools.stand.scenarios.smoke import SCOPES
+
+    module, _ = _fake_menus_module(list(SCOPES))
+    monkeypatch.setitem(sys.modules, "pigeon.telegram.commands", module)
+    code, report, _ = await run(tmp_path, telegram, "commands")
+    methods = [c["method"] for s in report["steps"][:5] for c in s["calls"]]
+    assert methods[2:] == ["deleteMyCommands", "deleteMyCommands", "setMyCommands", "setMyCommands"]
+    # The rest of the flow needs the commands of this very revision.
+    assert code == (0 if HAS_MENUS else 1)

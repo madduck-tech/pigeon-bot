@@ -5,7 +5,7 @@ Needs a revision with `pigeon.telegram.commands`; on an older one the scenario f
 
 from __future__ import annotations
 
-from aiogram.methods import GetMyCommands
+from aiogram.methods import DeleteMyCommands, GetMyCommands
 
 from tools.stand.harness import Stand
 from tools.stand.scenarios.smoke import SCOPES, TIMEZONE, common_flow, scope_name
@@ -25,11 +25,26 @@ async def run(stand: Stand) -> None:
         step.error = f"this revision has no command menus (ADR-0013, PR #21): {exc}"
         return
 
+    # Menus outlive a run: without a reset, a menu left by an earlier run would pass the check.
+    for scope in SCOPES:
+        step, _ = await stand.call(
+            f"reset the {scope_name(scope)} menu", DeleteMyCommands(scope=scope)
+        )
+        step.check("Telegram accepted deleteMyCommands", step.error is None, step.error)
+
     # run_bot publishes the menus before polling; the stand does the same.
     step = await stand.run("startup: publish the command menus", lambda: publish_menus(stand.bot))
     step.expect_handled()
-    accepted = [c for c in step.calls_of("setMyCommands") if c.get("ok")]
-    step.check("Telegram accepted setMyCommands for both scopes", len(accepted) == 2)
+    published = sorted(
+        c["params"].get("scope", {}).get("type", "default")
+        for c in step.calls_of("setMyCommands")
+        if c.get("ok")
+    )
+    step.check(
+        "Telegram accepted setMyCommands for both group scopes",
+        published == sorted(scope_name(scope) for scope in SCOPES),
+        published,
+    )
 
     await common_flow(
         stand,
