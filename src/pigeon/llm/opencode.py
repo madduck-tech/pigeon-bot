@@ -37,6 +37,8 @@ class OpenCodeClient:
         self._model = model
         self._url = base_url.rstrip("/") + "/chat/completions"
         self._timeout = timeout
+        # finish_reason and token usage of the last reply, for diagnostics; never the text.
+        self.last_meta: dict = {}
 
     def __repr__(self) -> str:  # never show the key
         return f"OpenCodeClient(model={self._model!r}, url={self._url!r})"
@@ -80,14 +82,24 @@ class OpenCodeClient:
                 body.extend(chunk)
                 if len(body) > BODY_LIMIT:
                     raise ModelUnavailable("response exceeds size limit")
-        return _content(bytes(body))
+        return self._content(bytes(body))
+
+    def _content(self, body: bytes) -> str:
+        try:
+            data = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ModelUnavailable("invalid JSON") from exc
+        if isinstance(data, dict):
+            choices = data.get("choices")
+            first = choices[0] if isinstance(choices, list) and choices else {}
+            self.last_meta = {
+                "finish_reason": first.get("finish_reason") if isinstance(first, dict) else None,
+                "usage": data.get("usage") if isinstance(data.get("usage"), dict) else None,
+            }
+        return _text(data)
 
 
-def _content(body: bytes) -> str:
-    try:
-        data = json.loads(body)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ModelUnavailable("invalid JSON") from exc
+def _text(data) -> str:
     try:
         content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:

@@ -188,6 +188,7 @@ class Stand:
         self.store: Store | None = None
         self.dispatcher = Dispatcher()
         self.steps: list[Step] = []
+        self.extra: dict[str, Any] = {}  # scenario observations, such as model timings
         self.me: dict[str, Any] | None = None
         self.chat: dict[str, Any] | None = None
         self._update_ids = itertools.count(1)
@@ -370,14 +371,15 @@ class Stand:
                 ],
             },
             "global_checks": global_checks,
+            "observations": self.extra,
             "steps": [s.to_json() for s in self.steps],
         }
 
     def write_report(self, report: dict[str, Any]) -> Path:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         text = json.dumps(report, ensure_ascii=False, indent=2)
-        if self.config.token in text:  # never write the token, whatever carried it in
-            text = text.replace(self.config.token, "<token>")
+        for secret in self.config.secrets:  # never write a secret, whatever carried it in
+            text = text.replace(secret, "<token>")
         path = self.run_dir / "report.json"
         path.write_text(text + "\n", encoding="utf-8")
         public = json.dumps(redact(json.loads(text), self._private_ids()), ensure_ascii=False)
@@ -448,14 +450,16 @@ def revision() -> dict[str, Any]:
     }
 
 
-def scrub(value: Any, secret: str) -> Any:
-    """A copy of value with the secret cut out of every string."""
+def scrub(value: Any, *secrets: str) -> Any:
+    """A copy of value with every secret cut out of every string."""
     if isinstance(value, dict):
-        return {k: scrub(v, secret) for k, v in value.items()}
+        return {k: scrub(v, *secrets) for k, v in value.items()}
     if isinstance(value, list):
-        return [scrub(v, secret) for v in value]
-    if isinstance(value, str) and secret and secret in value:
-        return value.replace(secret, "<token>")
+        return [scrub(v, *secrets) for v in value]
+    if isinstance(value, str):
+        for secret in secrets:
+            if secret and secret in value:
+                value = value.replace(secret, "<token>")
     return value
 
 

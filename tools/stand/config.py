@@ -26,6 +26,13 @@ REQUIRED = {
 }
 INTEGERS = ("CHAT_ID", "ADMIN_ID", "MEMBER_ID")
 TOKEN_FORMAT = re.compile(r"[0-9]+:[A-Za-z0-9_-]+")
+# The bot's own chronicle settings (ADR-0014), read from the same file for the chronicle
+# scenario. The key is a secret like the token: it never reaches a report or the console.
+CHRONICLE_VARS = (
+    "PIGEON_CHRONICLE_API_KEY",
+    "PIGEON_CHRONICLE_MODEL",
+    "PIGEON_CHRONICLE_BASE_URL",
+)
 
 
 class StandConfigError(Exception):
@@ -39,6 +46,14 @@ class StandConfig:
     admin_id: int
     member_id: int
     runs_dir: Path = RUNS_DIR
+    chronicle_api_key: str | None = field(default=None, repr=False)
+    chronicle_model: str | None = None
+    chronicle_base_url: str | None = None
+
+    @property
+    def secrets(self) -> tuple[str, ...]:
+        """Every value the stand must cut out of logs and reports."""
+        return tuple(s for s in (self.token, self.chronicle_api_key) if s)
 
 
 def read_env_file(path: Path) -> dict[str, str]:
@@ -63,7 +78,7 @@ def load_config(
     values: dict[str, str] = {}
     if env_file is not None and env_file.is_file():
         values.update(read_env_file(env_file))
-    values.update({k: v for k, v in environ.items() if k.startswith(PREFIX)})
+    values.update({k: v for k, v in environ.items() if k.startswith(PREFIX) or k in CHRONICLE_VARS})
 
     missing = [
         f"  {PREFIX}{name}: {hint}"
@@ -95,10 +110,14 @@ def load_config(
         )
 
     runs_dir = values.get(PREFIX + "RUNS_DIR", "").strip()
+    chronicle = {name: values.get(name, "").strip() or None for name in CHRONICLE_VARS}
     return StandConfig(
         token=token,
         chat_id=ids["CHAT_ID"],
         admin_id=ids["ADMIN_ID"],
         member_id=ids["MEMBER_ID"],
         runs_dir=Path(runs_dir) if runs_dir else RUNS_DIR,
+        chronicle_api_key=chronicle["PIGEON_CHRONICLE_API_KEY"],
+        chronicle_model=chronicle["PIGEON_CHRONICLE_MODEL"],
+        chronicle_base_url=chronicle["PIGEON_CHRONICLE_BASE_URL"],
     )

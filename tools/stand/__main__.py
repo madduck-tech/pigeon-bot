@@ -21,16 +21,18 @@ EXIT_PASSED, EXIT_FAILED, EXIT_REFUSED = 0, 1, 2
 
 
 class _Redact(logging.Filter):
-    """Keeps the token out of every log line, whatever logs it."""
+    """Keeps the secrets (bot token, model key) out of every log line, whatever logs it."""
 
-    def __init__(self, token: str) -> None:
+    def __init__(self, *secrets: str) -> None:
         super().__init__()
-        self.token = token
+        self.secrets = tuple(s for s in secrets if s)
 
     def filter(self, record: logging.LogRecord) -> bool:
         message = record.getMessage()
-        if self.token in message:
-            record.msg, record.args = message.replace(self.token, "<token>"), None
+        if any(secret in message for secret in self.secrets):
+            for secret in self.secrets:
+                message = message.replace(secret, "<token>")
+            record.msg, record.args = message, None
         return True
 
 
@@ -41,7 +43,25 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def missing_requirements(config: StandConfig, name: str) -> list[str]:
+    """Settings a scenario needs beyond the stand itself, such as the model key."""
+    needs = getattr(SCENARIOS[name], "REQUIRES", {})
+    return [f"  {var}: {hint}" for var, hint in needs.items() if not getattr(config, attr(var))]
+
+
+def attr(var: str) -> str:
+    return var.removeprefix("PIGEON_").lower()
+
+
 async def run_scenario(config: StandConfig, name: str, bot=None) -> tuple[int, Path | None]:
+    missing = missing_requirements(config, name)
+    if missing:  # refuse before any network call or message
+        print(
+            f"The scenario {name} needs more settings in .env.stand or the environment:\n"
+            + "\n".join(missing),
+            file=sys.stderr,
+        )
+        return EXIT_REFUSED, None
     run_dir = new_run_dir(config.runs_dir, name)
     stand = Stand(config, bot or new_bot(config), run_dir, name)
     code, error = EXIT_PASSED, None
@@ -57,7 +77,7 @@ async def run_scenario(config: StandConfig, name: str, bot=None) -> tuple[int, P
                 code, error = EXIT_FAILED, f"{type(exc).__name__}: {exc}"
     finally:
         await stand.close()
-    report = scrub(stand.report(error), config.token)
+    report = scrub(stand.report(error), *config.secrets)
     if code == EXIT_PASSED and not report["passed"]:
         code = EXIT_FAILED
     path = stand.write_report(report)
@@ -107,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_REFUSED
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     for handler in logging.getLogger().handlers:
-        handler.addFilter(_Redact(config.token))
+        handler.addFilter(_Redact(*config.secrets))
     code, _ = asyncio.run(run_scenario(config, args.scenario))
     return code
 
