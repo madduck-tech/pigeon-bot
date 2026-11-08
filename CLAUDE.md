@@ -58,6 +58,12 @@ python3 -m venv .venv
 .venv/bin/pytest
 ```
 
+Тестовый стенд (Stage 2, нужен локальный `.env.stand`, см. `docs/operations.md`, «Тестовый стенд»):
+
+```sh
+.venv/bin/python -m tools.stand smoke
+```
+
 Форматирование: `.venv/bin/ruff format .`. Новый код проходит и `ruff check`, и `pytest` до коммита.
 
 Образ (Docker):
@@ -107,6 +113,7 @@ src/pigeon/       код бота
   render/         тексты и HTML-разметка
   telegram/       адаптер над aiogram
   llm/            HTTP-клиент OpenCode Go для недельной хроники
+tools/stand/      харнес тестового стенда в Telegram (вне прод-кода)
 tests/            тесты
 docs/
   design.md           дизайн и решения (источник правды о текущем поведении)
