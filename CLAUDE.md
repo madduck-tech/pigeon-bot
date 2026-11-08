@@ -60,7 +60,7 @@ python3 -m venv .venv
 Тестовый стенд (Stage 2, нужен локальный `.env.stand`, см. `docs/operations.md`, «Тестовый стенд»):
 
 ```sh
-.venv/bin/python -m tools.stand smoke
+.venv/bin/python -m tools.stand commands
 ```
 
 Форматирование: `.venv/bin/ruff format .`. Новый код проходит и `ruff check`, и `pytest` до коммита.
