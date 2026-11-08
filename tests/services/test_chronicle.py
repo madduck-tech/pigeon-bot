@@ -490,8 +490,33 @@ def test_clean_is_fast_on_hostile_long_replies() -> None:
     assert render.clean("Голубь. " + "а" * render.MAX_RAW_CHARS) is None
 
 
+def test_long_raw_reply_that_cleans_short_is_accepted() -> None:
+    """The raw cap is wider than the clean limit: link noise is dropped, not the chronicle."""
+    raw = "Голуби улетели. https://x.example/" + "a" * 1500 + " Вася плевал метко."
+    assert render.MAX_CHARS < len(raw) <= render.MAX_RAW_CHARS
+    assert render.clean(raw) == "Голуби улетели. Вася плевал метко."
+
+
 def test_every_listed_cyrillic_tld_is_stripped() -> None:
-    for tld in render._CYRILLIC_TLDS.split("|"):
+    # The list is spelled out here, so shortening it in the code fails this test.
+    expected = [
+        "рф",
+        "рус",
+        "онлайн",
+        "сайт",
+        "орг",
+        "ком",
+        "москва",
+        "дети",
+        "бел",
+        "укр",
+        "қаз",
+        "срб",
+        "мкд",
+        "бг",
+    ]
+    assert sorted(render._CYRILLIC_TLDS.split("|")) == sorted(expected)
+    for tld in expected:
         assert render.clean(f"Сайт двор.{tld} закрыт.") == "Сайт закрыт.", tld
 
 
