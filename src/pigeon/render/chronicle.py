@@ -17,8 +17,11 @@ TITLE = "📜 <b>Хроника недели</b>"
 
 _URL = re.compile(r"(?i)\b(?:[a-z][a-z0-9+.-]*://|www\.|(?:mailto|javascript|tel|tg):)\S*")
 # Domain-like words such as example.com or t.me/x: Telegram would turn them into links.
-# Cyrillic TLDs (.рф, .онлайн, .рус) count too.
-_DOMAIN = re.compile(r"(?i)\b(?:[\w-]+\.)+(?:[a-z]{2,24}|[а-яё]{2,24})\b(?:/\S*)?")
+# Only real Cyrillic TLDs count: "Вася.Петя" or "улетели.Вася" is text, not a domain.
+_CYRILLIC_TLDS = "рф|рус|онлайн|сайт|орг|ком|москва|дети|бел|укр|қаз|срб|мкд|бг"
+_DOMAIN = re.compile(
+    rf"(?i)\b(?:[\w-]+\.)+(?:[a-z]{{2,24}}|(?:{_CYRILLIC_TLDS})(?![\w]))\b(?:/\S*)?"
+)
 _MARKUP = re.compile(r"[*`#<>@＠﹫]")
 _SPACES = re.compile(r"\s+")
 _SPACE_BEFORE_PUNCT = re.compile(r"\s+([,.!?…:;])")

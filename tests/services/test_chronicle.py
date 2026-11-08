@@ -461,6 +461,16 @@ def test_clean_rules() -> None:
         "Пиши или и x."
     )
     assert render.clean("...") is None and render.clean("!!! ???") is None
+    for text in (
+        "Вася.Петя плевал метко.",
+        "Голуби улетели.Вася плевал метко.",
+        "А.С.Пушкин плевал.",
+        "Ёжик.Ёлка промахнулся.",
+        "Сайт голуби.рфия не домен.",
+        "Т.е. голубь улетел.",
+        "В 10.30 прилетел голубь.",
+    ):
+        assert render.clean(text) == text  # dotted Cyrillic words are not domains
     assert render.clean("Голубь‮улетел​.") == "Голубь улетел."
     assert render.clean("«Цитата целиком.»") == "Цитата целиком."
     assert render.clean("Т.е. голубь улетел.") == "Т.е. голубь улетел."
@@ -474,6 +484,15 @@ def test_clean_name_rules() -> None:
     assert render.clean_name("  Вася\n\tПупкин  ") == "Вася Пупкин"
     assert render.clean_name("​\n") == "?"
     assert render.clean_name("x" * 100) == "x" * render.NAME_CHARS
+
+
+async def test_unexpected_errors_log_only_their_class(store, caplog) -> None:
+    play(store, CHAT)
+    model = FakeModel(error=RuntimeError("Вася sk-secret reply text"))
+    with caplog.at_level(logging.WARNING, logger="pigeon.chronicle"):
+        assert await prepare(store, model) == "failed"
+    assert "chronicle unavailable (RuntimeError)" in caplog.text
+    assert "Вася" not in caplog.text and "sk-secret" not in caplog.text
 
 
 async def test_logs_hold_no_names_or_reply(store, caplog) -> None:
