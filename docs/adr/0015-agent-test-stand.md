@@ -1,10 +1,10 @@
 # ADR-0015: Тестовый стенд в Telegram с синтетическими апдейтами
 
 Дата: 2026-11-08  
-Статус: proposed  
+Статус: accepted  
 Supersedes: —  
 Superseded by: —  
-Issue / PR: [#22](https://github.com/madduck-tech/pigeon-bot/issues/22)
+Issue / PR: [#22](https://github.com/madduck-tech/pigeon-bot/issues/22), принят ревью [PR #24](https://github.com/madduck-tech/pigeon-bot/pull/24) 2026-11-08
 
 ## Контекст
 
