@@ -6,19 +6,23 @@ harness alike. Nothing in pigeon/ knows about it.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import enum
 from typing import Any
 
 from aiogram.client.default import Default
 from aiogram.client.session.middlewares.base import BaseRequestMiddleware
-from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
+from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramRetryAfter
 from pydantic import BaseModel
 
 # Telegram's answer to an answerCallbackQuery for a query it never sent.
 UNKNOWN_QUERY_MARKERS = ("query is too old", "query id is invalid")
 EXPECTED_ANSWER_ERROR = "synthetic callback_query: Telegram does not know this query id"
 CHAT_FIELDS = ("chat_id", "from_chat_id")
+# Flood control on a busy stand chat: wait as Telegram asks, a bounded number of times.
+MAX_FLOOD_WAITS = 3
+MAX_FLOOD_WAIT_SECONDS = 60
 
 
 class StandGuardError(Exception):
@@ -64,6 +68,7 @@ class Recorder(BaseRequestMiddleware):
         self.verified = False  # set once getMe proved this is not the production bot
         self.synthetic_queries: set[str] = set()
         self.calls: list[dict[str, Any]] = []  # the current step's calls
+        self.sleep = asyncio.sleep
 
     async def __call__(self, make_request, bot, method):
         name = method.__api_method__
@@ -77,7 +82,7 @@ class Recorder(BaseRequestMiddleware):
             raise StandGuardError(f"{name}: {reason}")
 
         try:
-            result = await make_request(bot, method)
+            result = await self._with_flood_waits(make_request, bot, method, record)
         except TelegramAPIError as exc:
             record["ok"] = False
             record["error"] = exc.message
@@ -95,6 +100,21 @@ class Recorder(BaseRequestMiddleware):
         record["ok"] = True
         record["result"] = plain(result, bot)
         return result
+
+    async def _with_flood_waits(self, make_request, bot, method, record):
+        """Flood control says nothing about the change under test, so wait and resend.
+
+        Every wait is in the report; a wait longer than the bound fails the call.
+        """
+        for _ in range(MAX_FLOOD_WAITS):
+            try:
+                return await make_request(bot, method)
+            except TelegramRetryAfter as exc:
+                if exc.retry_after > MAX_FLOOD_WAIT_SECONDS:
+                    raise
+                record.setdefault("flood_waits", []).append(exc.retry_after)
+                await self.sleep(exc.retry_after)
+        return await make_request(bot, method)
 
     def _refusal(self, name: str, params: dict[str, Any]) -> str | None:
         if not self.verified and name != "getMe":

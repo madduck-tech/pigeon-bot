@@ -46,6 +46,7 @@ class FakeTelegram(BaseSession):
         self.statuses = {ADMIN: "creator", MEMBER: "member", BOT_ID: "member"}
         self.menus: dict[str, list] = {}
         self.fail: dict[str, str] = {}  # method -> description of a 400
+        self.flood: list[int] = []  # retry_after of the next 429s, one per call
         self.methods: list[str] = []
         self.next_message_id = 100
 
@@ -58,6 +59,15 @@ class FakeTelegram(BaseSession):
     async def make_request(self, bot, method, timeout=None):
         name = method.__api_method__
         self.methods.append(name)
+        if self.flood and name == "sendMessage":
+            wait = self.flood.pop(0)
+            reply = {
+                "ok": False,
+                "error_code": 429,
+                "description": f"Too Many Requests: retry after {wait}",
+                "parameters": {"retry_after": wait},
+            }
+            return self.check_response(bot, method, 429, json.dumps(reply)).result
         if name in self.fail:
             reply = {"ok": False, "error_code": 400, "description": self.fail[name]}
             return self.check_response(bot, method, 400, json.dumps(reply)).result
@@ -449,3 +459,28 @@ async def test_commands_scenario_resets_then_checks_a_correct_publish(
     assert methods[2:] == ["deleteMyCommands", "deleteMyCommands", "setMyCommands", "setMyCommands"]
     # The rest of the flow needs the commands of this very revision.
     assert code == (0 if HAS_MENUS else 1)
+
+
+async def test_flood_control_is_waited_out_and_reported(telegram):
+    from aiogram.exceptions import TelegramRetryAfter
+
+    bot = fake_bot(telegram)
+    recorder = Recorder(CHAT)
+    recorder.verified = True
+    waits = []
+
+    async def sleep(seconds):
+        waits.append(seconds)
+
+    recorder.sleep = sleep
+    bot.session.middleware(recorder)
+    telegram.flood = [3, 5]
+    await bot(SendMessage(chat_id=CHAT, text="busy chat"))
+    assert waits == [3, 5]
+    assert recorder.calls[-1]["ok"] is True
+    assert recorder.calls[-1]["flood_waits"] == [3, 5]
+
+    telegram.flood = [600]  # longer than the bound: the call fails, the stand does not hang
+    with pytest.raises(TelegramRetryAfter):
+        await bot(SendMessage(chat_id=CHAT, text="too busy"))
+    assert waits == [3, 5]
