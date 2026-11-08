@@ -16,6 +16,7 @@ from pigeon.content import Content, load_content
 from pigeon.handlers.pigeon import build_router
 from pigeon.repo.store import Store
 from pigeon.scheduler import arrivals, fortunes
+from pigeon.telegram.commands import publish_menus
 from pigeon.telegram.messages import TelegramArrivalSender
 
 log = logging.getLogger("pigeon")
@@ -61,6 +62,7 @@ async def run_bot(settings: Settings) -> None:
     dp = Dispatcher()
     rng = random.Random()
     dp.include_router(build_router(store, clock, content, rng))
+    await publish_menus(bot)
     scheduler = asyncio.create_task(_scheduler_loop(store, clock, bot, rng, content))
     log.info("pigeon polling and scheduler started")
     try:

@@ -1,29 +1,30 @@
-"""The separate commands of ADR-0013 (PR #21): the smoke of PR #21 run by an agent.
-
-Needs a revision with `pigeon.telegram.commands`; on an older one the scenario fails at once.
-"""
+"""The separate commands of ADR-0013 and their menus: the smoke of PR #21, run by an agent."""
 
 from __future__ import annotations
 
 from aiogram.methods import DeleteMyCommands, GetMyCommands
+from aiogram.types import BotCommandScopeAllChatAdministrators, BotCommandScopeAllGroupChats
 
-from tools.stand.harness import Stand
-from tools.stand.scenarios.smoke import SCOPES, TIMEZONE, common_flow, scope_name
+from pigeon.render import texts
+from tools.stand.harness import ADMIN_STATUSES, Stand
 
 DESCRIPTION = (
-    "startup menus, /setup by the admin, /stats and /pigeon stats by a member, /arrive refused "
-    "to the member and run by the admin, a spit tap, /quiet by an anonymous admin, "
-    "getMyCommands for both group scopes compared with the menus of this revision"
+    "startup menus, /setup by the admin, /stats and /pigeon with an argument by a member, "
+    "/arrive refused to the member and run by the admin, a spit tap, /quiet by an anonymous "
+    "admin, getMyCommands for both group scopes compared with the menus of this revision"
 )
+TIMEZONE = "Europe/Moscow"
+REFUSALS = (texts.NOT_GROUP, texts.NOT_ENABLED, texts.ADMIN_ONLY)
+SCOPES = (BotCommandScopeAllGroupChats(), BotCommandScopeAllChatAdministrators())
+
+
+def scope_name(scope) -> str:
+    return getattr(scope.type, "value", scope.type)
 
 
 async def run(stand: Stand) -> None:
-    try:
-        from pigeon.telegram.commands import menus, publish_menus
-    except ImportError as exc:
-        step = stand.begin("startup: publish the command menus", "startup")
-        step.error = f"this revision has no command menus (ADR-0013, PR #21): {exc}"
-        return
+    # Imported here, not at the top, so offline tests can swap in a broken menu module.
+    from pigeon.telegram.commands import menus, publish_menus
 
     # Menus outlive a run: without a reset, a menu left by an earlier run would pass the check.
     for scope in SCOPES:
@@ -72,3 +73,50 @@ async def run(stand: Stand) -> None:
                 "got": [c["command"] for c in got],
             },
         )
+
+
+async def common_flow(
+    stand: Stand, *, setup: str, stats: str, status: str, arrive: str, quiet: str
+) -> None:
+    """Setup, stats, status, a refused and a real arrival, a spit tap and an anonymous admin
+    command."""
+    step = await stand.command("setup by the admin", stand.admin, setup)
+    step.expect_handled()
+    step.expect_member_lookup(stand.config.admin_id, ADMIN_STATUSES)
+    step.expect_sent(texts.SETUP_DONE.format(tz=TIMEZONE))
+
+    step = await stand.command("week stats by the member", stand.member, stats)
+    step.expect_handled()
+    step.expect_no_call("getChatMember")
+    step.expect_sent_except(*REFUSALS)
+
+    step = await stand.command("status by the member", stand.member, status)
+    step.expect_handled()
+    step.expect_no_call("getChatMember")
+    step.expect_sent(texts.STATUS_AWAY)
+
+    step = await stand.command("arrive refused to the member", stand.member, arrive)
+    step.expect_handled()
+    step.expect_member_lookup(stand.config.member_id, ("member",))
+    step.expect_sent(texts.ADMIN_ONLY)
+    step.expect_no_button("pg:")
+
+    step = await stand.command("arrive by the admin", stand.admin, arrive)
+    step.expect_handled()
+    step.expect_member_lookup(stand.config.admin_id, ADMIN_STATUSES)
+    arrival = step.expect_button("pg:hit:")
+
+    if arrival is not None:
+        message, data = arrival
+        step = await stand.tap("spit by the member", stand.member, message, data)
+        step.expect_handled()
+        step.expect_expected_answer_error()
+        answers = step.calls_of("answerCallbackQuery")
+        answer = (answers[0]["params"].get("text") or "") if answers else ""
+        step.check("the tap was answered with points, not a refusal", "+" in answer, answer)
+        step.expect_edit(message["message_id"])
+
+    step = await stand.command("quiet hours by an anonymous admin", stand.anonymous_admin, quiet)
+    step.expect_handled()
+    step.expect_no_call("getChatMember")
+    step.expect_sent(texts.QUIET_SET.format(start=23, end=8))

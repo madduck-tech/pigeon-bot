@@ -1,5 +1,5 @@
 """Stand scenarios. Each module has DESCRIPTION and `async def run(stand)`."""
 
-from tools.stand.scenarios import commands, smoke
+from tools.stand.scenarios import commands
 
-SCENARIOS = {"smoke": smoke, "commands": commands}
+SCENARIOS = {"commands": commands}

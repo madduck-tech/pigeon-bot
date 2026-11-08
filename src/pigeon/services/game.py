@@ -18,7 +18,7 @@ HIT_POINTS = 1
 
 
 class NotEnabled(Exception):
-    """The chat has not run /pigeon setup yet."""
+    """The chat has not run /setup yet."""
 
 
 class HitOutcome(Enum):
@@ -101,7 +101,7 @@ def arrive(
 ) -> Event | None:
     """Open a new arrival. Returns None if a pigeon is already sitting in this chat.
 
-    source is 'manual' (an admin ran /pigeon arrive) or 'auto' (the scheduler planned it).
+    source is 'manual' (an admin ran /arrive) or 'auto' (the scheduler planned it).
     Only 'auto' arrivals count against the spontaneous-message budget.
     """
     if not store.is_enabled(chat_id):

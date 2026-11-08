@@ -3,6 +3,7 @@
 import asyncio
 import json
 import random
+import re
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -16,6 +17,7 @@ from aiogram.methods import (
     AnswerCallbackQuery,
     EditMessageText,
     GetChatMember,
+    GetMe,
     SendMessage,
     SendPhoto,
 )
@@ -33,6 +35,7 @@ CHAT = -1001
 NEW_CHAT = -100777
 ADMIN = 1
 USER = 2
+BOT_USERNAME = "golubinskity_bot"
 NOON = datetime(2026, 11, 2, 9, 0, tzinfo=UTC)
 CONTENT = load_content(Path(__file__).resolve().parents[2] / "content")
 
@@ -70,6 +73,8 @@ class FakeSession(BaseSession):
     async def make_request(self, bot, method, timeout=None):
         self.calls.append(method)
         chat = Chat(id=CHAT, type="supergroup")
+        if isinstance(method, GetMe):
+            return User(id=42, is_bot=True, first_name="Голубятня", username=BOT_USERNAME)
         if isinstance(method, GetChatMember):
             return SimpleNamespace(status="administrator" if method.user_id == ADMIN else "member")
         if isinstance(method, SendPhoto):
@@ -125,11 +130,12 @@ class Harness:
         first_name: str = "Anna",
         chat_id: int = CHAT,
         sender_chat: Chat | None = None,
+        chat_type: str = "supergroup",
     ) -> None:
         message = Message(
             message_id=self.update_id + 1,
             date=NOON,
-            chat=Chat(id=chat_id, type="supergroup"),
+            chat=Chat(id=chat_id, type=chat_type),
             from_user=User(id=user_id, is_bot=False, first_name=first_name),
             sender_chat=sender_chat,
             text=text,
@@ -190,29 +196,29 @@ VISITOR = game.Visitor("Гена", "Голубь {name} прилетел, кур
 
 
 async def test_pause_is_for_admins_only(harness, store) -> None:
-    await harness.command("/pigeon pause 24h", user_id=USER)
+    await harness.command("/pause 24h", user_id=USER)
     assert harness.session.said() == [texts.ADMIN_ONLY]
     assert store.get_chat(CHAT).paused_until is None
 
 
 async def test_pause_for_a_day_and_off(harness, store, clock) -> None:
-    await harness.command("/pigeon pause 24h")
+    await harness.command("/pause 24h")
     assert store.get_chat(CHAT).paused_until == clock.now() + timedelta(hours=24)
-    await harness.command("/pigeon pause 7d")
+    await harness.command("/pause 7d")
     assert store.get_chat(CHAT).paused_until == clock.now() + timedelta(days=7)
-    await harness.command("/pigeon pause off")
+    await harness.command("/pause off")
     assert store.get_chat(CHAT).paused_until is None
     assert harness.session.said()[-1] == texts.PAUSE_OFF
 
 
 async def test_pause_rejects_other_arguments(harness, store) -> None:
-    await harness.command("/pigeon pause 3w")
+    await harness.command("/pause 3w")
     assert harness.session.said() == [texts.PAUSE_BAD]
     assert store.get_chat(CHAT).paused_until is None
 
 
 async def test_fortune_once_a_day_as_a_reply(harness) -> None:
-    await harness.command("/pigeon fortune", user_id=USER)
+    await harness.command("/fortune", user_id=USER)
     first = harness.session.calls[-1]
     assert first.text in {
         texts.render_fortune(line, name)
@@ -221,7 +227,7 @@ async def test_fortune_once_a_day_as_a_reply(harness) -> None:
         for name in CONTENT.names
     }
     assert first.reply_parameters is not None or first.reply_to_message_id is not None
-    await harness.command("/pigeon fortune", user_id=USER)
+    await harness.command("/fortune", user_id=USER)
     assert harness.session.said()[-1] == texts.FORTUNE_ALREADY
 
 
@@ -230,14 +236,14 @@ async def test_profile_shows_points_achievements_and_trophy(harness, store, cloc
     game.hit(store, clock, CHAT, event.id, ADMIN, "Anna")
     store.award(CHAT, ADMIN, achievements.SNIPER, clock.now())
     clock.set(clock.now() + timedelta(days=2))
-    await harness.command("/pigeon profile")
+    await harness.command("/profile")
     text = harness.session.said()[-1]
     assert "Очки: <b>1</b>" in text and "Снайпер" in text
     assert "Золотой плевок: 2 дн." in text
 
 
 async def test_profile_of_a_newcomer(harness) -> None:
-    await harness.command("/pigeon profile", user_id=USER)
+    await harness.command("/profile", user_id=USER)
     text = harness.session.said()[-1]
     assert "Очки: <b>0</b>" in text and "пока нет" in text
 
@@ -246,7 +252,7 @@ async def test_profile_survives_achievements_of_closed_mechanics(harness, store,
     # Regression: old databases hold `bullseye`, which has no text any more.
     store.award(CHAT, ADMIN, "bullseye", clock.now())
     store.award(CHAT, ADMIN, achievements.SNIPER, clock.now())
-    await harness.command("/pigeon profile")
+    await harness.command("/profile")
     text = harness.session.said()[-1]
     assert "Снайпер" in text and "bullseye" not in text
 
@@ -255,25 +261,25 @@ async def test_stats_show_the_trophy_and_rating(harness, store, clock) -> None:
     event = game.arrive(store, clock, CHAT)
     game.hit(store, clock, CHAT, event.id, ADMIN, "Anna")
     clock.set(clock.now() + timedelta(days=3))
-    await harness.command("/pigeon stats all")
+    await harness.command("/stats all")
     text = harness.session.said()[-1]
     assert "Золотой плевок: <b>Anna</b> (держит 3 дн.)" in text
     assert "1. Anna — 1" in text
 
 
 async def test_stats_in_a_new_chat(harness) -> None:
-    await harness.command("/pigeon stats all")
+    await harness.command("/stats all")
     assert "пока никто не попадал" in harness.session.said()[-1]
 
 
 async def test_arrive_is_for_admins_only(harness, store) -> None:
-    await harness.command("/pigeon arrive", user_id=USER)
+    await harness.command("/arrive", user_id=USER)
     assert harness.session.said() == [texts.ADMIN_ONLY]
     assert store.current_open_event(CHAT) is None
 
 
 async def test_arrive_releases_a_named_pigeon_with_two_buttons(harness, store) -> None:
-    await harness.command("/pigeon arrive")
+    await harness.command("/arrive")
     event = store.current_open_event(CHAT)
     assert event.pigeon_name in CONTENT.names and event.intro in CONTENT.arrivals
     call = harness.session.calls[-1]
@@ -432,7 +438,7 @@ async def test_migration_notice_from_the_new_chat_alone_is_enough(harness, store
 @pytest.mark.parametrize("name", ["Europe", "America", "Etc", "no/such"])
 async def test_setup_rejects_a_timezone_folder_without_crashing(harness, name) -> None:
     # Regression: on Python 3.12 "Europe" raised IsADirectoryError and the bot said nothing.
-    await harness.command(f"/pigeon setup {name}")
+    await harness.command(f"/setup {name}")
     assert harness.session.said() == [texts.TZ_BAD]
 
 
@@ -441,7 +447,7 @@ def _timezone_buttons(call) -> list[str]:
 
 
 async def test_setup_of_a_new_chat_waits_for_a_timezone_choice(harness, store) -> None:
-    await harness.command("/pigeon setup", chat_id=NEW_CHAT)
+    await harness.command("/setup", chat_id=NEW_CHAT)
     call = harness.session.calls[-1]
     assert call.text == texts.SETUP_CHOOSE
     assert "pg:tz:Europe/Moscow" in _timezone_buttons(call)
@@ -455,7 +461,7 @@ async def test_setup_of_a_new_chat_waits_for_a_timezone_choice(harness, store) -
 
 
 async def test_repeating_setup_shows_the_current_zone_and_changes_it(harness, store) -> None:
-    await harness.command("/pigeon setup")
+    await harness.command("/setup")
     assert harness.session.said() == [texts.SETUP_CHOOSE_CURRENT.format(tz="Europe/Moscow")]
     assert store.get_chat(CHAT).timezone == "Europe/Moscow"
     await harness.tap("pg:tz:Europe/London", user_id=ADMIN)
@@ -463,13 +469,13 @@ async def test_repeating_setup_shows_the_current_zone_and_changes_it(harness, st
 
 
 async def test_setup_with_a_timezone_needs_no_buttons(harness, store) -> None:
-    await harness.command("/pigeon setup Asia/Tokyo")
+    await harness.command("/setup Asia/Tokyo")
     assert harness.session.said() == [texts.SETUP_DONE.format(tz="Asia/Tokyo")]
     assert store.get_chat(CHAT).timezone == "Asia/Tokyo"
 
 
 async def test_setup_is_for_admins_only(harness) -> None:
-    await harness.command("/pigeon setup", user_id=USER)
+    await harness.command("/setup", user_id=USER)
     assert harness.session.said() == [texts.ADMIN_ONLY]
 
 
@@ -502,7 +508,7 @@ async def test_double_tap_on_a_timezone_is_harmless(harness, store) -> None:
 async def test_anonymous_admin_can_run_setup(harness, store) -> None:
     # Regression: the service account is a plain member, so anonymous admins were refused.
     await harness.command(
-        "/pigeon setup Asia/Omsk",
+        "/setup Asia/Omsk",
         user_id=1087968824,
         sender_chat=Chat(id=CHAT, type="supergroup"),
     )
@@ -511,7 +517,7 @@ async def test_anonymous_admin_can_run_setup(harness, store) -> None:
 
 async def test_a_channel_posting_in_the_chat_is_not_an_admin(harness, store) -> None:
     await harness.command(
-        "/pigeon setup Asia/Omsk",
+        "/setup Asia/Omsk",
         user_id=136817688,
         sender_chat=Chat(id=-100555, type="channel"),
     )
@@ -519,11 +525,14 @@ async def test_a_channel_posting_in_the_chat_is_not_an_admin(harness, store) -> 
 
 
 async def test_help_says_what_is_kept_and_lists_only_live_commands(harness) -> None:
-    await harness.command("/pigeon help")
+    await harness.command("/help")
     text = harness.session.said()[0]
     assert "Голубятня" in text and "не сохраняет" in text
-    assert all(word in text for word in ("/pigeon stats", "/pigeon fortune", "/pigeon arrive"))
-    assert not any(word in text for word in ("/pigeon duel", "/pigeon photo", "/pigeon name"))
+    commands = [name for name, _ in texts.COMMON_COMMANDS + texts.ADMIN_COMMANDS]
+    assert all(f"/{name}" in text for name in commands)
+    assert "@golubinskity_bot" in text
+    assert re.search(r"/pigeon [a-z]", text) is None  # the retired `/pigeon <sub>` syntax
+    assert not any(word in text for word in ("duel", "photo", "/name"))
 
 
 async def test_callback_data_fits_telegram() -> None:
@@ -572,20 +581,20 @@ def _open_adult(store, clock):
 
 async def test_adult_command_is_admin_only_and_scoped(harness, store) -> None:
     assert store.get_chat(CHAT).adult_enabled is False
-    await harness.command("/pigeon adult on", user_id=USER)
+    await harness.command("/adult on", user_id=USER)
     assert harness.session.said() == [texts.ADMIN_ONLY]
     assert store.get_chat(CHAT).adult_enabled is False
-    await harness.command("/pigeon adult on")
+    await harness.command("/adult on")
     assert store.get_chat(CHAT).adult_enabled is True
     store.enable_chat(NEW_CHAT, NOON, "UTC")
     assert store.get_chat(NEW_CHAT).adult_enabled is False
-    await harness.command("/pigeon adult off")
+    await harness.command("/adult off")
     assert store.get_chat(CHAT).adult_enabled is False
 
 
 @pytest.mark.parametrize("args", ["", "maybe", "on now"])
 async def test_adult_command_rejects_bad_arguments(harness, store, args) -> None:
-    await harness.command(f"/pigeon adult {args}")
+    await harness.command(f"/adult {args}")
     assert harness.session.said() == [texts.ADULT_BAD]
     assert store.get_chat(CHAT).adult_enabled is False
 
@@ -593,7 +602,7 @@ async def test_adult_command_rejects_bad_arguments(harness, store, args) -> None
 async def test_adult_arrival_comes_from_deck_and_has_area_buttons(harness, store) -> None:
     store.set_adult_enabled(CHAT, True)
     store.save_pigeon_deck(CHAT, PigeonDeck(["adult"], "normal"))
-    await harness.command("/pigeon arrive")
+    await harness.command("/arrive")
     event = store.current_open_event(CHAT)
     assert event.pigeon_type == "adult"
     call = harness.session.calls[-1]
@@ -681,7 +690,7 @@ async def test_adult_off_and_other_chat_block_unclaimed_gift(harness, store) -> 
     await harness.tap(f"pg:aim:{event.id}:{adult.target(event)}")
     await harness.tap(f"pg:gift:{event.id}", chat_id=NEW_CHAT)
     assert harness.gifts.calls == 0
-    await harness.command("/pigeon adult off")
+    await harness.command("/adult off")
     await harness.tap(f"pg:gift:{event.id}")
     assert harness.gifts.calls == 0
     assert harness.session.toasts()[-1] == texts.GIFT_DISABLED
@@ -900,3 +909,253 @@ async def test_network_failure_on_late_answer_still_redraws_without_gift_button(
     ]
     assert f"pg:gift:{event.id}" not in buttons
     assert ("Голубка" in edits[0].text) is True
+
+
+# --- Separate commands (ADR-0013, issue #13) -------------------------------------------------
+
+COMMON = [name for name, _ in texts.COMMON_COMMANDS]
+ADMIN_ONLY_COMMANDS = [name for name, _ in texts.ADMIN_COMMANDS]
+ALL_COMMANDS = COMMON + ADMIN_ONLY_COMMANDS
+ANON_ADMIN = {"user_id": 1087968824, "sender_chat": Chat(id=CHAT, type="supergroup")}
+
+
+def _dump(store) -> str:
+    return "\n".join(store._conn.iterdump())
+
+
+def _no_member_lookups(harness) -> bool:
+    return not any(isinstance(c, GetChatMember) for c in harness.session.calls)
+
+
+def test_menu_lists_exactly_the_issue_commands() -> None:
+    assert COMMON == ["pigeon", "help", "stats", "profile", "fortune"]
+    assert ADMIN_ONLY_COMMANDS == ["setup", "quiet", "pause", "arrive", "adult"]
+    for name, description in texts.COMMON_COMMANDS + texts.ADMIN_COMMANDS:
+        assert re.fullmatch(r"[a-z0-9_]{1,32}", name)  # Bot API rule for BotCommand.command
+        assert 1 <= len(description) <= 256
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "/pigeon",
+        "/help",
+        "/stats",
+        "/stats week",
+        "/stats all",
+        "/profile",
+        "/setup",
+        "/setup Asia/Tokyo",
+        "/quiet 23 9",
+        "/quiet 9 23",
+        "/pause off",
+        "/pause 3w",
+        "/adult off",
+        "/adult maybe",
+    ],
+)
+async def test_command_with_the_bot_suffix_answers_like_the_bare_one(store, clock, text) -> None:
+    replies = []
+    for suffix in ("", f"@{BOT_USERNAME}"):
+        h = Harness(store, clock)
+        name, _, rest = text.partition(" ")
+        await h.command(f"{name}{suffix} {rest}".strip())
+        replies.append(h.session.said())
+        await h.bot.session.close()
+    assert replies[0] == replies[1] and len(replies[0]) == 1
+
+
+async def test_fortune_and_arrive_work_with_the_bot_suffix(harness, store) -> None:
+    await harness.command(f"/fortune@{BOT_USERNAME}", user_id=USER)
+    assert harness.session.said()[-1] != texts.FORTUNE_ALREADY
+    await harness.command(f"/fortune@{BOT_USERNAME}", user_id=USER)
+    assert harness.session.said()[-1] == texts.FORTUNE_ALREADY
+    await harness.command(f"/arrive@{BOT_USERNAME}")
+    assert store.current_open_event(CHAT) is not None
+
+
+@pytest.mark.parametrize("name", ALL_COMMANDS)
+async def test_command_for_another_bot_is_ignored(harness, store, name) -> None:
+    before = _dump(store)
+    await harness.command(f"/{name}@other_bot on")
+    assert harness.session.said() == []
+    assert _dump(store) == before
+
+
+@pytest.mark.parametrize("name", ALL_COMMANDS)
+async def test_every_command_answers_only_in_groups(harness, store, name) -> None:
+    before = _dump(store)
+    await harness.command(f"/{name}", chat_id=ADMIN, chat_type="private")
+    assert harness.session.said() == [texts.NOT_GROUP]
+    assert _dump(store) == before
+
+
+@pytest.mark.parametrize("name", ALL_COMMANDS)
+async def test_every_menu_command_has_a_handler(harness, name) -> None:
+    await harness.command(f"/{name}")
+    assert harness.session.said(), f"/{name} got no answer"
+
+
+async def test_help_and_setup_work_before_setup(harness, store) -> None:
+    await harness.command("/help", user_id=USER, chat_id=NEW_CHAT)
+    await harness.command(f"/help@{BOT_USERNAME}", user_id=USER, chat_id=NEW_CHAT)
+    assert harness.session.said() == [texts.HELP, texts.HELP]
+    await harness.command("/setup Europe/Moscow", chat_id=NEW_CHAT)
+    assert harness.session.said()[-1] == texts.SETUP_DONE.format(tz="Europe/Moscow")
+    assert store.is_enabled(NEW_CHAT)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["/pigeon", "/stats", "/profile", "/fortune", "/quiet 23 9", "/pause 24h", "/arrive"]
+    + ["/adult on"],
+)
+async def test_other_commands_wait_for_setup_even_for_admins(harness, store, text) -> None:
+    before = _dump(store)
+    await harness.command(text, chat_id=NEW_CHAT)
+    assert harness.session.said() == [texts.NOT_ENABLED]
+    assert "/setup" in texts.NOT_ENABLED
+    assert _dump(store) == before
+
+
+@pytest.mark.parametrize(
+    "text", ["/setup", "/setup Asia/Tokyo", "/quiet 23 9", "/pause 24h", "/arrive", "/adult on"]
+)
+async def test_admin_commands_refuse_members_and_change_nothing(harness, store, text) -> None:
+    before = _dump(store)
+    await harness.command(text, user_id=USER)
+    assert harness.session.said() == [texts.ADMIN_ONLY]
+    assert _dump(store) == before
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("/quiet 22 8", texts.QUIET_SET.format(start=22, end=8)),
+        ("/pause off", texts.PAUSE_OFF),
+        ("/adult on", texts.ADULT_ON),
+        ("/setup Asia/Omsk", texts.SETUP_DONE.format(tz="Asia/Omsk")),
+    ],
+)
+async def test_anonymous_admin_runs_admin_commands(harness, text, expected) -> None:
+    await harness.command(text, **ANON_ADMIN)
+    assert harness.session.said() == [expected]
+    assert _no_member_lookups(harness)
+
+
+async def test_anonymous_admin_can_release_a_pigeon(harness, store) -> None:
+    await harness.command("/arrive", **ANON_ADMIN)
+    assert store.current_open_event(CHAT) is not None
+    assert _no_member_lookups(harness)
+
+
+async def test_quiet_hours_are_set_and_bad_values_change_nothing(harness, store) -> None:
+    await harness.command("/quiet 22 8")
+    chat = store.get_chat(CHAT)
+    assert (chat.quiet_start, chat.quiet_end) == (22, 8)
+    for bad in ("/quiet 9 23", "/quiet 23", "/quiet a b", "/quiet 24 9"):
+        await harness.command(bad)
+    assert harness.session.said()[1:] == [texts.QUIET_BAD] * 4
+    assert "/quiet 23 9" in texts.QUIET_BAD
+    chat = store.get_chat(CHAT)
+    assert (chat.quiet_start, chat.quiet_end) == (22, 8)
+
+
+async def test_arrive_twice_does_not_open_a_second_pigeon(harness, store) -> None:
+    await harness.command("/arrive")
+    first = store.current_open_event(CHAT)
+    await harness.command("/arrive")
+    assert harness.session.said()[-1] == texts.ALREADY_SITTING
+    assert store.current_open_event(CHAT).id == first.id
+
+
+async def test_stats_week_equals_default_and_garbage_falls_back(harness, store, clock) -> None:
+    event = game.arrive(store, clock, CHAT)
+    game.hit(store, clock, CHAT, event.id, ADMIN, "Anna")
+    for text in ("/stats", "/stats week", "/stats garbage", "/stats all"):
+        await harness.command(text)
+    week, week_again, garbage, overall = harness.session.said()
+    assert week == week_again == garbage
+    assert overall != week and "Золотой плевок" in overall
+
+
+PIGEON_ARGS = [
+    "stats",
+    "stats all",
+    "help",
+    "profile",
+    "fortune",
+    "setup",
+    "setup Europe/London",
+    "quiet 22 8",
+    "pause 24h",
+    "arrive",
+    "adult on",
+    "foo bar",
+]
+
+
+@pytest.mark.parametrize("args", PIGEON_ARGS)
+@pytest.mark.parametrize("sitting", [False, True])
+async def test_pigeon_with_any_arguments_only_shows_the_status(
+    harness, store, clock, args, sitting
+) -> None:
+    if sitting:
+        game.arrive(store, clock, CHAT, VISITOR)
+    before = _dump(store)
+    await harness.command("/pigeon")
+    await harness.command(f"/pigeon {args}")
+    await harness.command(f"/pigeon@{BOT_USERNAME} {args}")
+    bare, with_args, with_suffix = harness.session.said()
+    assert with_args == with_suffix == bare
+    assert bare == (texts.status_sitting("Гена", 0) if sitting else texts.STATUS_AWAY)
+    assert _dump(store) == before  # no subcommand ran: no setup, pause, fortune or arrival
+    assert harness.session.calls[-1].reply_markup is None  # no setup keyboard either
+
+
+@pytest.mark.parametrize("args", ["setup Europe/Moscow", "help", "setup"])
+async def test_pigeon_with_arguments_in_a_new_chat_does_not_set_it_up(harness, store, args):
+    await harness.command(f"/pigeon {args}", chat_id=NEW_CHAT)
+    assert harness.session.said() == [texts.NOT_ENABLED]
+    assert store.get_chat(NEW_CHAT) is None
+
+
+async def test_pigeon_with_arguments_in_private_is_not_a_game(harness) -> None:
+    await harness.command("/pigeon setup Europe/Moscow", chat_id=ADMIN, chat_type="private")
+    assert harness.session.said() == [texts.NOT_GROUP]
+
+
+def test_texts_name_only_the_new_commands() -> None:
+    public = {
+        name: value
+        for name, value in vars(texts).items()
+        if name.isupper() and isinstance(value, str)
+    }
+    old = {name for name, value in public.items() if re.search(r"/pigeon [a-z]", value)}
+    assert old == set()
+    for name in ("NOT_ENABLED", "TZ_BAD", "TZ_UNKNOWN"):
+        assert "/setup" in public[name]
+    for name in ("SETUP_DONE", "STATUS_AWAY"):
+        assert "/arrive" in public[name]
+    assert "/pause 24h" in texts.PAUSE_BAD and "/adult on" in texts.ADULT_BAD
+    # [с] [до] stay plain text: angle-bracket placeholders would break parse_mode=HTML.
+    assert set(re.findall(r"</?([a-zA-Zа-яА-Я]+)", texts.HELP)) == {"b"}
+
+
+@pytest.mark.parametrize("text", ["/quiet 23 9", "/pause 24h", "/arrive", "/adult on"])
+async def test_member_in_a_new_chat_hears_about_setup_before_rights(harness, store, text) -> None:
+    # Guard order: group, then setup, then admin rights — as the old /pigeon dispatcher did.
+    await harness.command(text, user_id=USER, chat_id=NEW_CHAT)
+    assert harness.session.said() == [texts.NOT_ENABLED]
+    assert _no_member_lookups(harness)
+    assert store.get_chat(NEW_CHAT) is None
+
+
+@pytest.mark.parametrize("arg", ["all", "ALL", "All"])
+async def test_stats_all_ignores_case(harness, store, clock, arg) -> None:
+    event = game.arrive(store, clock, CHAT)
+    game.hit(store, clock, CHAT, event.id, ADMIN, "Anna")
+    await harness.command("/stats all")
+    await harness.command(f"/stats {arg}")
+    reference, answer = harness.session.said()
+    assert answer == reference and "Золотой плевок" in answer

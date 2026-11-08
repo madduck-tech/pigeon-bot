@@ -5,7 +5,6 @@ through `python -m tools.stand`."""
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
 import sys
 import types
@@ -30,10 +29,7 @@ CHAT = -1009990001
 ADMIN = 7001
 MEMBER = 7002
 BOT_ID = 123456
-# The scenario that matches this revision: the /pigeon <sub> commands of main, or the separate
-# commands and menus of ADR-0013 once PR #21 is in.
-HAS_MENUS = importlib.util.find_spec("pigeon.telegram.commands") is not None
-CURRENT = "commands" if HAS_MENUS else "smoke"
+CURRENT = "commands"  # the only scenario: separate commands and menus of ADR-0013
 QUERY_TOO_OLD = "Bad Request: query is too old and response timeout expired or query ID is invalid"
 
 
@@ -195,7 +191,7 @@ def test_cli_without_config_exits_2_before_any_network(tmp_path, monkeypatch, ca
         if key.startswith("PIGEON_STAND_"):
             monkeypatch.delenv(key)
     monkeypatch.setattr(cli, "new_bot", lambda _: pytest.fail("no bot without a config"))
-    assert cli.main(["smoke"]) == 2
+    assert cli.main(["commands"]) == 2
     assert "The test stand is not configured" in capsys.readouterr().err
 
 
@@ -222,7 +218,7 @@ async def test_bot_outside_the_stand_chat_is_refused(tmp_path, telegram):
 
 async def test_private_chat_id_is_refused(tmp_path, telegram):
     stand_config = StandConfig(TOKEN, 42, ADMIN, MEMBER, runs_dir=tmp_path / "runs")
-    code, _ = await cli.run_scenario(stand_config, "smoke", bot=fake_bot(telegram))
+    code, _ = await cli.run_scenario(stand_config, CURRENT, bot=fake_bot(telegram))
     assert code == 2
     assert telegram.methods == ["getMe"]
 
@@ -337,23 +333,14 @@ async def test_each_run_gets_its_own_database(tmp_path, telegram):
     _, first, _ = await run(tmp_path, telegram)
     second_telegram = FakeTelegram()
     second_telegram.fail["answerCallbackQuery"] = QUERY_TOO_OLD
-    stand = Stand(config(tmp_path), fake_bot(second_telegram), tmp_path / "other", "smoke")
+    stand = Stand(config(tmp_path), fake_bot(second_telegram), tmp_path / "other", CURRENT)
     assert str(stand.db_path) != first["database"]
 
 
-@pytest.mark.skipif(not HAS_MENUS, reason="this revision has no command menus (ADR-0013)")
 async def test_commands_scenario_publishes_and_compares_both_menus(tmp_path, telegram):
     code, report, _ = await run(tmp_path, telegram, "commands")
     assert code == 0, report["summary"]
     assert set(telegram.menus) == {"all_group_chats", "all_chat_administrators"}
-
-
-@pytest.mark.skipif(HAS_MENUS, reason="this revision has the command menus (ADR-0013)")
-async def test_commands_scenario_fails_clearly_without_menus(tmp_path, telegram):
-    code, report, _ = await run(tmp_path, telegram, "commands")
-    assert code == 1
-    assert "ADR-0013" in report["steps"][-1]["error"]
-    assert "sendMessage" not in telegram.methods
 
 
 # --- R1 regressions --------------------------------------------------------------
@@ -412,7 +399,7 @@ def _fake_menus_module(publish_scopes):
     """A stand-in for pigeon.telegram.commands that publishes to the given scopes."""
     from aiogram.types import BotCommand
 
-    from tools.stand.scenarios.smoke import SCOPES
+    from tools.stand.scenarios.commands import SCOPES
 
     def menus():
         common = [BotCommand(command="pigeon", description="status")]
@@ -450,7 +437,7 @@ async def test_menus_left_by_an_earlier_run_cannot_hide_a_broken_publish(
 async def test_commands_scenario_resets_then_checks_a_correct_publish(
     tmp_path, telegram, monkeypatch
 ):
-    from tools.stand.scenarios.smoke import SCOPES
+    from tools.stand.scenarios.commands import SCOPES
 
     module, _ = _fake_menus_module(list(SCOPES))
     monkeypatch.setitem(sys.modules, "pigeon.telegram.commands", module)
@@ -458,7 +445,7 @@ async def test_commands_scenario_resets_then_checks_a_correct_publish(
     methods = [c["method"] for s in report["steps"][:5] for c in s["calls"]]
     assert methods[2:] == ["deleteMyCommands", "deleteMyCommands", "setMyCommands", "setMyCommands"]
     # The rest of the flow needs the commands of this very revision.
-    assert code == (0 if HAS_MENUS else 1)
+    assert code == 0, report["summary"]
 
 
 async def test_flood_control_is_waited_out_and_reported(telegram):
