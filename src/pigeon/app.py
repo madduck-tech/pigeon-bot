@@ -18,6 +18,7 @@ from pigeon.llm.opencode import OpenCodeClient
 from pigeon.repo.store import Store
 from pigeon.scheduler import arrivals, chronicle, fortunes
 from pigeon.services.chronicle import ChronicleModel
+from pigeon.telegram.commands import publish_menus
 from pigeon.telegram.messages import TelegramArrivalSender
 
 log = logging.getLogger("pigeon")
@@ -86,6 +87,7 @@ async def run_bot(settings: Settings) -> None:
     rng = random.Random()
     model = chronicle_model(settings)
     dp.include_router(build_router(store, clock, content, rng, chronicle_enabled=model is not None))
+    await publish_menus(bot)
     tasks = [asyncio.create_task(_scheduler_loop(store, clock, bot, rng, content))]
     if model is not None and content.chronicle is not None:
         tasks.append(asyncio.create_task(_chronicle_loop(store, clock, model, content)))

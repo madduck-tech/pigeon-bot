@@ -1,4 +1,4 @@
-"""Telegram handlers: /pigeon commands and the arrival buttons. Thin: logic lives in services."""
+"""Telegram handlers: bot commands and the arrival buttons. Thin: logic lives in services."""
 
 from __future__ import annotations
 
@@ -68,148 +68,32 @@ def build_router(
             return True
         return await _is_chat_admin(message.bot, message.chat.id, message.from_user.id)
 
-    @router.message(Command("pigeon"))
-    async def pigeon_command(message: Message, command: CommandObject) -> None:
-        if message.chat.type not in GROUP_TYPES:
-            await message.answer(texts.NOT_GROUP)
-            return
+    def command(name: str, *, needs_setup: bool = True, admin_only: bool = False):
+        """Register a group command. Guards keep the order of the old single-command dispatcher."""
+
+        def register(handler):
+            async def guarded(message: Message, command: CommandObject) -> None:
+                if message.chat.type not in GROUP_TYPES:
+                    await message.answer(texts.NOT_GROUP)
+                    return
+                if needs_setup and not store.is_enabled(message.chat.id):
+                    await message.answer(texts.NOT_ENABLED)
+                    return
+                if admin_only and not await is_admin(message):
+                    await message.answer(texts.ADMIN_ONLY)
+                    return
+                await handler(message, (command.args or "").split())
+
+            guarded.__name__ = f"{name}_command"
+            router.message(Command(name))(guarded)
+            return handler
+
+        return register
+
+    @command("pigeon")
+    async def status(message: Message, args: list[str]) -> None:
+        # Arguments are ignored: the old `/pigeon <sub>` syntax is retired (ADR-0013).
         chat_id = message.chat.id
-        parts = (command.args or "").split()
-        sub = parts[0].lower() if parts else ""
-
-        if sub == "help":
-            await message.answer(texts.help_text(chronicle_enabled))
-            return
-
-        if sub == "setup":
-            if not await is_admin(message):
-                await message.answer(texts.ADMIN_ONLY)
-                return
-            if len(parts) < 2:
-                current = store.get_chat(chat_id) if store.is_enabled(chat_id) else None
-                await message.answer(
-                    texts.SETUP_CHOOSE_CURRENT.format(tz=current.timezone)
-                    if current
-                    else texts.SETUP_CHOOSE,
-                    reply_markup=timezone_keyboard(content.timezones),
-                )
-                return
-            tz = parts[1]
-            if not _valid_timezone(tz):
-                await message.answer(texts.TZ_BAD)
-                return
-            store.enable_chat(chat_id, clock.now(), tz)
-            await message.answer(texts.SETUP_DONE.format(tz=tz))
-            return
-
-        if not store.is_enabled(chat_id):
-            await message.answer(texts.NOT_ENABLED)
-            return
-
-        if sub == "adult":
-            if not await is_admin(message):
-                await message.answer(texts.ADMIN_ONLY)
-                return
-            if len(parts) != 2 or parts[1].lower() not in {"on", "off"}:
-                await message.answer(texts.ADULT_BAD)
-                return
-            enabled = parts[1].lower() == "on"
-            store.set_adult_enabled(chat_id, enabled)
-            await message.answer(texts.ADULT_ON if enabled else texts.ADULT_OFF)
-            return
-
-        if sub == "quiet":
-            if not await is_admin(message):
-                await message.answer(texts.ADMIN_ONLY)
-                return
-            bounds = _quiet_bounds(parts[1:3])
-            if bounds is None:
-                await message.answer(texts.QUIET_BAD)
-                return
-            store.set_quiet_hours(chat_id, *bounds)
-            await message.answer(texts.QUIET_SET.format(start=bounds[0], end=bounds[1]))
-            return
-
-        if sub == "pause":
-            if not await is_admin(message):
-                await message.answer(texts.ADMIN_ONLY)
-                return
-            await message.answer(_apply_pause(store, clock, chat_id, parts[1:]))
-            return
-
-        if sub == "profile":
-            user_id = message.from_user.id
-            await message.answer(
-                texts.profile(
-                    message.from_user.full_name,
-                    store.balance(chat_id, user_id),
-                    award_names(store.achievements_of(chat_id, user_id)),
-                    store.trophy_held(chat_id, user_id, clock.now()).days,
-                    store.week_balance(
-                        chat_id,
-                        user_id,
-                        *weekly.bounds(clock.now(), store.get_chat(chat_id).timezone)[1:],
-                    ),
-                )
-            )
-            return
-
-        if sub == "fortune":
-            line = fortune.draw(
-                store,
-                clock,
-                rng,
-                content.fortunes,
-                store.get_chat(chat_id),
-                message.from_user.id,
-                content.names,
-            )
-            await message.reply(texts.FORTUNE_ALREADY if line is None else line)
-            return
-
-        if sub == "stats":
-            if len(parts) > 1 and parts[1].lower() == "all":
-                trophy = store.get_trophy(chat_id)
-                result = texts.stats(
-                    store.leaderboard(chat_id),
-                    trophy.holder_name if trophy else None,
-                    (clock.now() - trophy.since).days if trophy else 0,
-                )
-            else:
-                _, start, end = weekly.bounds(clock.now(), store.get_chat(chat_id).timezone)
-                result = texts.week_stats(
-                    store.week_leaderboard(chat_id, start, end),
-                    weekly.label(weekly.current(store, chat_id, clock.now(), content.quests)),
-                    weekly.last_title(store, chat_id),
-                )
-            await message.answer(result)
-            return
-
-        if sub == "arrive":
-            if not await is_admin(message):
-                await message.answer(texts.ADMIN_ONLY)
-                return
-            event = game.arrive(
-                store,
-                clock,
-                chat_id,
-                game.pick_visitor(rng, content),
-                rng=rng,
-                dove_names=content.dove_names,
-            )
-            if event is None:
-                await message.answer(texts.ALREADY_SITTING)
-                return
-            try:
-                message_id = await TelegramArrivalSender(
-                    message.bot, store, clock, content.quests
-                ).send_arrival(chat_id, event)
-            except Exception:
-                game.delete_unsent_event(store, chat_id, event.id)
-                raise
-            store.set_event_message(event.id, message_id)
-            return
-
         current = store.current_open_event(chat_id)
         if current is not None and clock.now() < current.closes_at:
             name = current.pigeon_name or texts.PIGEON_NAME
@@ -218,6 +102,124 @@ def build_router(
             )
         else:
             await message.answer(texts.STATUS_AWAY)
+
+    @command("help", needs_setup=False)
+    async def help_(message: Message, args: list[str]) -> None:
+        await message.answer(texts.help_text(chronicle_enabled))
+
+    @command("setup", needs_setup=False, admin_only=True)
+    async def setup(message: Message, args: list[str]) -> None:
+        chat_id = message.chat.id
+        if not args:
+            current = store.get_chat(chat_id) if store.is_enabled(chat_id) else None
+            await message.answer(
+                texts.SETUP_CHOOSE_CURRENT.format(tz=current.timezone)
+                if current
+                else texts.SETUP_CHOOSE,
+                reply_markup=timezone_keyboard(content.timezones),
+            )
+            return
+        tz = args[0]
+        if not _valid_timezone(tz):
+            await message.answer(texts.TZ_BAD)
+            return
+        store.enable_chat(chat_id, clock.now(), tz)
+        await message.answer(texts.SETUP_DONE.format(tz=tz))
+
+    @command("adult", admin_only=True)
+    async def adult_mode(message: Message, args: list[str]) -> None:
+        if len(args) != 1 or args[0].lower() not in {"on", "off"}:
+            await message.answer(texts.ADULT_BAD)
+            return
+        enabled = args[0].lower() == "on"
+        store.set_adult_enabled(message.chat.id, enabled)
+        await message.answer(texts.ADULT_ON if enabled else texts.ADULT_OFF)
+
+    @command("quiet", admin_only=True)
+    async def quiet(message: Message, args: list[str]) -> None:
+        bounds = _quiet_bounds(args[:2])
+        if bounds is None:
+            await message.answer(texts.QUIET_BAD)
+            return
+        store.set_quiet_hours(message.chat.id, *bounds)
+        await message.answer(texts.QUIET_SET.format(start=bounds[0], end=bounds[1]))
+
+    @command("pause", admin_only=True)
+    async def pause(message: Message, args: list[str]) -> None:
+        await message.answer(_apply_pause(store, clock, message.chat.id, args))
+
+    @command("profile")
+    async def profile(message: Message, args: list[str]) -> None:
+        chat_id = message.chat.id
+        user_id = message.from_user.id
+        await message.answer(
+            texts.profile(
+                message.from_user.full_name,
+                store.balance(chat_id, user_id),
+                award_names(store.achievements_of(chat_id, user_id)),
+                store.trophy_held(chat_id, user_id, clock.now()).days,
+                store.week_balance(
+                    chat_id,
+                    user_id,
+                    *weekly.bounds(clock.now(), store.get_chat(chat_id).timezone)[1:],
+                ),
+            )
+        )
+
+    @command("fortune")
+    async def personal_fortune(message: Message, args: list[str]) -> None:
+        line = fortune.draw(
+            store,
+            clock,
+            rng,
+            content.fortunes,
+            store.get_chat(message.chat.id),
+            message.from_user.id,
+            content.names,
+        )
+        await message.reply(texts.FORTUNE_ALREADY if line is None else line)
+
+    @command("stats")
+    async def stats(message: Message, args: list[str]) -> None:
+        chat_id = message.chat.id
+        if args and args[0].lower() == "all":
+            trophy = store.get_trophy(chat_id)
+            result = texts.stats(
+                store.leaderboard(chat_id),
+                trophy.holder_name if trophy else None,
+                (clock.now() - trophy.since).days if trophy else 0,
+            )
+        else:
+            _, start, end = weekly.bounds(clock.now(), store.get_chat(chat_id).timezone)
+            result = texts.week_stats(
+                store.week_leaderboard(chat_id, start, end),
+                weekly.label(weekly.current(store, chat_id, clock.now(), content.quests)),
+                weekly.last_title(store, chat_id),
+            )
+        await message.answer(result)
+
+    @command("arrive", admin_only=True)
+    async def arrive(message: Message, args: list[str]) -> None:
+        chat_id = message.chat.id
+        event = game.arrive(
+            store,
+            clock,
+            chat_id,
+            game.pick_visitor(rng, content),
+            rng=rng,
+            dove_names=content.dove_names,
+        )
+        if event is None:
+            await message.answer(texts.ALREADY_SITTING)
+            return
+        try:
+            message_id = await TelegramArrivalSender(
+                message.bot, store, clock, content.quests
+            ).send_arrival(chat_id, event)
+        except Exception:
+            game.delete_unsent_event(store, chat_id, event.id)
+            raise
+        store.set_event_message(event.id, message_id)
 
     async def handle_hit(callback: CallbackQuery, event_id: int, area: str | None = None) -> None:
         if callback.message is None:
