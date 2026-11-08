@@ -62,6 +62,7 @@ python3 -m venv .venv
 
 ```sh
 .venv/bin/python -m tools.stand commands
+.venv/bin/python -m tools.stand chronicle  # нужен PIGEON_CHRONICLE_API_KEY, после commands
 ```
 
 Форматирование: `.venv/bin/ruff format .`. Новый код проходит и `ruff check`, и `pytest` до коммита.
