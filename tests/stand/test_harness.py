@@ -26,6 +26,10 @@ CHAT = -1009990001
 ADMIN = 7001
 MEMBER = 7002
 BOT_ID = 123456
+# The scenario that matches this revision: the /pigeon <sub> commands of main, or the separate
+# commands and menus of ADR-0013 once PR #21 is in.
+HAS_MENUS = importlib.util.find_spec("pigeon.telegram.commands") is not None
+CURRENT = "commands" if HAS_MENUS else "smoke"
 QUERY_TOO_OLD = "Bad Request: query is too old and response timeout expired or query ID is invalid"
 
 
@@ -109,7 +113,7 @@ def telegram() -> FakeTelegram:
     return session
 
 
-async def run(tmp_path, telegram, scenario="smoke"):
+async def run(tmp_path, telegram, scenario=CURRENT):
     code, path = await cli.run_scenario(config(tmp_path), scenario, bot=fake_bot(telegram))
     return code, json.loads(path.read_text()), path
 
@@ -240,7 +244,7 @@ async def test_answer_error_is_masked_only_for_a_synthetic_query(telegram):
 # --- scenarios -----------------------------------------------------------------
 
 
-async def test_smoke_passes_and_records_every_call(tmp_path, telegram, monkeypatch):
+async def test_current_scenario_passes_and_records_every_call(tmp_path, telegram, monkeypatch):
     monkeypatch.setenv("PIGEON_DB_PATH", str(tmp_path / "prod.db"))
     code, report, path = await run(tmp_path, telegram)
     assert code == 0, report["summary"]
@@ -304,7 +308,8 @@ async def test_markup_rejected_by_telegram_fails_the_run(tmp_path, telegram):
     telegram.fail["sendMessage"] = "Bad Request: can't parse entities"
     code, report, _ = await run(tmp_path, telegram)
     assert code == 1
-    assert report["steps"][2]["error"].startswith("TelegramBadRequest")
+    setup = next(s for s in report["steps"] if s["step"] == "setup by the admin")
+    assert setup["error"].startswith("TelegramBadRequest")
 
 
 async def test_each_run_gets_its_own_database(tmp_path, telegram):
@@ -315,13 +320,11 @@ async def test_each_run_gets_its_own_database(tmp_path, telegram):
     assert str(stand.db_path) != first["database"]
 
 
-HAS_MENUS = importlib.util.find_spec("pigeon.telegram.commands") is not None
-
-
 @pytest.mark.skipif(not HAS_MENUS, reason="this revision has no command menus (ADR-0013)")
-async def test_commands_scenario_passes_where_menus_exist(tmp_path, telegram):
+async def test_commands_scenario_publishes_and_compares_both_menus(tmp_path, telegram):
     code, report, _ = await run(tmp_path, telegram, "commands")
     assert code == 0, report["summary"]
+    assert set(telegram.menus) == {"all_group_chats", "all_chat_administrators"}
 
 
 @pytest.mark.skipif(HAS_MENUS, reason="this revision has the command menus (ADR-0013)")
