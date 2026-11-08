@@ -361,6 +361,13 @@ class Stand:
                 "steps": len(self.steps),
                 "calls": sum(len(s.calls) for s in self.steps),
                 "failed_steps": [s.title for s in self.steps if not s.passed],
+                # A burst the stand waited out would break a handler in production.
+                "flood_waits": [
+                    {"step": s.title, "method": c["method"], "seconds": c["flood_waits"]}
+                    for s in self.steps
+                    for c in s.calls
+                    if c.get("flood_waits")
+                ],
             },
             "global_checks": global_checks,
             "steps": [s.to_json() for s in self.steps],

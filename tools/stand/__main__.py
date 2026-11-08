@@ -88,6 +88,11 @@ def _print_summary(report: dict, path: Path) -> None:
             print(f"       ✗ error: {step['error']}")
     for check in report["global_checks"]:
         print(f"[{'PASS' if check['ok'] else 'FAIL'}] {check['check']}")
+    for wait in report["summary"]["flood_waits"]:
+        print(
+            f"[WARN] flood control: {wait['method']} in «{wait['step']}» waited "
+            f"{sum(wait['seconds'])} s; in production this call would have failed"
+        )
     if report["error"]:
         print(f"refused: {report['error']}")
     print(f"{'PASSED' if report['passed'] else 'FAILED'}: {report['scenario']}; report {path}")

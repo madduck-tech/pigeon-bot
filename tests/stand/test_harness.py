@@ -484,3 +484,26 @@ async def test_flood_control_is_waited_out_and_reported(telegram):
     with pytest.raises(TelegramRetryAfter):
         await bot(SendMessage(chat_id=CHAT, text="too busy"))
     assert waits == [3, 5]
+
+
+async def test_flood_waits_are_visible_in_the_summary_and_console(tmp_path, telegram, capsys):
+    telegram.flood = [2]
+    stand_config = config(tmp_path)
+    stand = Stand(stand_config, fake_bot(telegram), tmp_path / "flood", CURRENT)
+
+    async def no_sleep(seconds):
+        pass
+
+    stand.recorder.sleep = no_sleep
+    await stand.open()
+    from tools.stand.scenarios import SCENARIOS
+
+    await SCENARIOS[CURRENT].run(stand)
+    await stand.close()
+    report = stand.report()
+    assert report["passed"]  # the change still works, the burst is a warning
+    assert report["summary"]["flood_waits"] == [
+        {"step": "setup by the admin", "method": "sendMessage", "seconds": [2]}
+    ]
+    cli._print_summary(report, tmp_path / "report.json")
+    assert "[WARN] flood control" in capsys.readouterr().out
