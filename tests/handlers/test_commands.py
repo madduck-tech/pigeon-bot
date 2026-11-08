@@ -1140,3 +1140,22 @@ def test_texts_name_only_the_new_commands() -> None:
     assert "/pause 24h" in texts.PAUSE_BAD and "/adult on" in texts.ADULT_BAD
     # [с] [до] stay plain text: angle-bracket placeholders would break parse_mode=HTML.
     assert set(re.findall(r"</?([a-zA-Zа-яА-Я]+)", texts.HELP)) == {"b"}
+
+
+@pytest.mark.parametrize("text", ["/quiet 23 9", "/pause 24h", "/arrive", "/adult on"])
+async def test_member_in_a_new_chat_hears_about_setup_before_rights(harness, store, text) -> None:
+    # Guard order: group, then setup, then admin rights — as the old /pigeon dispatcher did.
+    await harness.command(text, user_id=USER, chat_id=NEW_CHAT)
+    assert harness.session.said() == [texts.NOT_ENABLED]
+    assert _no_member_lookups(harness)
+    assert store.get_chat(NEW_CHAT) is None
+
+
+@pytest.mark.parametrize("arg", ["all", "ALL", "All"])
+async def test_stats_all_ignores_case(harness, store, clock, arg) -> None:
+    event = game.arrive(store, clock, CHAT)
+    game.hit(store, clock, CHAT, event.id, ADMIN, "Anna")
+    await harness.command("/stats all")
+    await harness.command(f"/stats {arg}")
+    reference, answer = harness.session.said()
+    assert answer == reference and "Золотой плевок" in answer
