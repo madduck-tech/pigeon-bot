@@ -5,6 +5,7 @@ import json
 import logging
 import random
 import sqlite3
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -478,6 +479,20 @@ def test_clean_rules() -> None:
     assert render.clean(long) == long
     assert render.clean("а" * render.MAX_CHARS + ".") is None
     assert render.block("a < b & c") == "📜 <b>Хроника недели</b>\n<i>a &lt; b &amp; c</i>"
+
+
+def test_clean_is_fast_on_hostile_long_replies() -> None:
+    """Cleaning runs on the event loop: a huge dotted reply must not stall the bot."""
+    started = time.monotonic()
+    for raw in ("а." * 32000, "a." * 32000, "x" * 65000, "а." * (render.MAX_RAW_CHARS // 2)):
+        render.clean(raw)
+    assert time.monotonic() - started < 0.5
+    assert render.clean("Голубь. " + "а" * render.MAX_RAW_CHARS) is None
+
+
+def test_every_listed_cyrillic_tld_is_stripped() -> None:
+    for tld in render._CYRILLIC_TLDS.split("|"):
+        assert render.clean(f"Сайт двор.{tld} закрыт.") == "Сайт закрыт.", tld
 
 
 def test_clean_name_rules() -> None:

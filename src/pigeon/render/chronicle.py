@@ -11,6 +11,9 @@ from html import escape
 
 MAX_CHARS = 400  # hard limit after cleaning; a longer reply is dropped whole
 MAX_SENTENCES = 3
+# A raw reply longer than this is too long before any cleaning. The cap also bounds the regex
+# work, which runs on the event loop: a 64 KB dotted reply would otherwise stall it for a minute.
+MAX_RAW_CHARS = 2000
 NAME_CHARS = 32  # a participant name as it goes to the model
 
 TITLE = "📜 <b>Хроника недели</b>"
@@ -36,7 +39,7 @@ def _printable(text: str) -> str:
 
 def clean(raw: str | None) -> str | None:
     """The chronicle as plain text, or None if the reply is empty or too long."""
-    if not isinstance(raw, str):
+    if not isinstance(raw, str) or len(raw) > MAX_RAW_CHARS:
         return None
     text = _printable(raw)
     text = _URL.sub(" ", text)
