@@ -29,6 +29,7 @@ ADR-0002–0011 зарегистрированы ретроспективно 20
 | [0010](0010-html-rendering-and-escaping.md) | HTML-разметка и централизованное экранирование | 2026-11-06 | accepted | — |
 | [0011](0011-container-release-without-cd.md) | Проверенный Docker-образ и внешний деплой без CD | 2026-11-06 | accepted | — |
 | [0012](0012-adult-pigeon-gift.md) | Голубка с подарком 18+ по явному включению чата | 2026-11-06 | accepted | Частично пересматривает [0001](0001-diversify-pigeon-experience.md) §2, [0006](0006-single-message-arrival-loop.md) и [0008](0008-group-commands-and-admin-setup.md) |
+| [0014](0014-weekly-llm-chronicle.md) | Недельная хроника от LLM в понедельничном посте | 2026-11-08 | proposed | Дополняет [0004](0004-privacy-and-minimal-data.md) (имена уходят внешнему сервису) |
 
 ## Новый документ
 
