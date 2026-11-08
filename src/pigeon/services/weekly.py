@@ -7,6 +7,7 @@ from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from pigeon.content import Quest
+from pigeon.render import chronicle as chronicle_render
 from pigeon.render import texts
 from pigeon.repo.store import QuestDeck, QuestRecord, Store
 
@@ -124,5 +125,14 @@ def monday_text(store: Store, chat_id: int, now: datetime, quests: tuple[Quest, 
         lines.extend(
             f"{i}. {texts._esc(name)} — {points}" for i, (name, points) in enumerate(rows, 1)
         )
+    text = chronicle_text(store, chat_id, key)
+    if text:
+        lines.append(chronicle_render.block(text))
     lines.append(label(current(store, chat_id, now, quests)))
     return "\n".join(lines)
+
+
+def chronicle_text(store: Store, chat_id: int, week_key: str) -> str | None:
+    """This week's stored chronicle, if it is ready. Never waits for the model (ADR-0014)."""
+    row = store.get_chronicle(chat_id, week_key)
+    return row.text if row and row.status == "ready" else None

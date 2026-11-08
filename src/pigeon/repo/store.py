@@ -130,6 +130,15 @@ CREATE TABLE IF NOT EXISTS daily_fortunes (
     local_day TEXT NOT NULL,
     PRIMARY KEY (chat_id, local_day)
 );
+-- The weekly chronicle (ADR-0014). week_key is the Monday of the post; text is set when ready.
+CREATE TABLE IF NOT EXISTS chronicles (
+    chat_id    INTEGER NOT NULL,
+    week_key   TEXT NOT NULL,
+    status     TEXT NOT NULL CHECK (status IN ('pending', 'ready', 'empty', 'failed')),
+    text       TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (chat_id, week_key)
+);
 """
 
 # Columns added after the first schema. Databases created earlier get them on startup.
@@ -199,6 +208,30 @@ class FortuneIssue:
     fortune_id: str | None
     rendered_text: str | None
     sent_at: str | None = None
+
+
+@dataclass(frozen=True)
+class Chronicle:
+    status: str
+    text: str | None
+
+
+@dataclass(frozen=True)
+class ChroniclePlayer:
+    name: str
+    points: int
+    hits: int
+    misses: int
+    big_hits: int
+    shoo_attempts: int
+    scared_away: int
+
+
+@dataclass(frozen=True)
+class ChronicleWeek:
+    arrivals_by_type: dict[str, int]
+    scared_away: int
+    players: list[ChroniclePlayer]
 
 
 @dataclass(frozen=True)
@@ -1054,3 +1087,86 @@ class Store:
                 (chat_id, _ts(start), _ts(end)),
             ).fetchone()[0]
         )
+
+    # weekly chronicle (ADR-0014)
+    def get_chronicle(self, chat_id: int, week_key: str) -> Chronicle | None:
+        row = self._conn.execute(
+            "SELECT status, text FROM chronicles WHERE chat_id=? AND week_key=?",
+            (chat_id, week_key),
+        ).fetchone()
+        return Chronicle(row["status"], row["text"]) if row else None
+
+    def claim_chronicle(self, chat_id: int, week_key: str, status: str, now: datetime) -> bool:
+        """Create the week's row. False if it already exists: one request per chat and week."""
+        with self._write():
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO chronicles (chat_id, week_key, status, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (chat_id, week_key, status, _ts(now)),
+            )
+        return cur.rowcount == 1
+
+    def finish_chronicle(self, chat_id: int, week_key: str, text: str | None) -> None:
+        """Settle a pending chronicle: ready with its text, or failed without one."""
+        with self._write():
+            self._conn.execute(
+                "UPDATE chronicles SET status=?, text=? "
+                "WHERE chat_id=? AND week_key=? AND status='pending'",
+                ("ready" if text else "failed", text, chat_id, week_key),
+            )
+
+    def chronicle_week(self, chat_id: int, start: datetime, end: datetime) -> ChronicleWeek:
+        """Game metadata of arrivals opened in [start, end) of one chat. No message text exists."""
+        window = (chat_id, _ts(start), _ts(end))
+        types = {
+            row["pigeon_type"]: int(row["n"])
+            for row in self._conn.execute(
+                "SELECT pigeon_type, COUNT(*) AS n FROM events "
+                "WHERE chat_id=? AND opened_at>=? AND opened_at<? "
+                "GROUP BY pigeon_type ORDER BY pigeon_type",
+                window,
+            )
+        }
+        scared = int(
+            self._conn.execute(
+                "SELECT COUNT(DISTINCT s.event_id) FROM shoos s JOIN events e "
+                "ON e.id=s.event_id AND e.chat_id=s.chat_id "
+                "WHERE s.chat_id=? AND e.opened_at>=? AND e.opened_at<? AND s.flew=1",
+                window,
+            ).fetchone()[0]
+        )
+        rows = self._conn.execute(
+            """SELECT u.user_id, COALESCE(m.display_name, '?') AS name,
+                COALESCE((SELECT SUM(l.delta) FROM points_ledger l WHERE l.chat_id=u.chat_id
+                    AND l.user_id=u.user_id AND l.created_at>=? AND l.created_at<?), 0) AS points,
+                COALESCE(SUM(u.hit), 0) AS hits, COALESCE(SUM(u.miss), 0) AS misses,
+                COALESCE(SUM(u.big), 0) AS big_hits, COALESCE(SUM(u.shoo), 0) AS shoos,
+                COALESCE(SUM(u.flew), 0) AS scared
+            FROM (
+                SELECT h.chat_id, h.user_id, (h.points > 0) AS hit, (h.outcome = 'miss') AS miss,
+                    (h.outcome IN ('cap', 'chain')) AS big, 0 AS shoo, 0 AS flew
+                FROM hits h JOIN events e ON e.id=h.event_id AND e.chat_id=h.chat_id
+                WHERE h.chat_id=? AND e.opened_at>=? AND e.opened_at<?
+                UNION ALL
+                SELECT s.chat_id, s.user_id, 0, 0, 0, 1, s.flew
+                FROM shoos s JOIN events e ON e.id=s.event_id AND e.chat_id=s.chat_id
+                WHERE s.chat_id=? AND e.opened_at>=? AND e.opened_at<?
+            ) u
+            LEFT JOIN members m ON m.chat_id=u.chat_id AND m.user_id=u.user_id
+            GROUP BY u.user_id
+            ORDER BY points DESC, hits DESC, name ASC""",
+            (_ts(start), _ts(end), *window, *window),
+        ).fetchall()
+        players = [
+            ChroniclePlayer(
+                row["name"],
+                int(row["points"]),
+                int(row["hits"]),
+                int(row["misses"]),
+                int(row["big_hits"]),
+                int(row["shoos"]),
+                int(row["scared"]),
+            )
+            for row in rows
+        ]
+        return ChronicleWeek(types, scared, players)

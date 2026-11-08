@@ -30,6 +30,16 @@ HELP = (
     "Текст сообщений чата и изображения бот не сохраняет. "
     "Хранятся настройки чата, id и имена игроков, время, игровые действия, очки и ачивки."
 )
+# Shown only when the weekly chronicle is on (ADR-0014): names leave the bot then.
+CHRONICLE_PRIVACY = (
+    "\nДля недельной хроники раз в неделю имена игроков и игровая статистика прошлой недели "
+    "передаются внешнему сервису OpenCode Go. Текст сообщений туда не передаётся."
+)
+
+
+def help_text(chronicle_enabled: bool = False) -> str:
+    return HELP + (CHRONICLE_PRIVACY if chronicle_enabled else "")
+
 
 NOT_GROUP = "Голубятня работает только в групповых чатах."
 NOT_ENABLED = "Сначала админ чата должен выполнить /pigeon setup."

@@ -27,6 +27,11 @@
 | `PIGEON_DB_PATH` | Путь к базе SQLite | `./data/pigeon.db`, в образе `/data/pigeon.db` |
 | `PIGEON_CONTENT_DIR` | Папка с YAML-контентом | `./content`, в образе `/app/content` |
 | `PIGEON_LOG_LEVEL` | Уровень логов | `INFO` |
+| `PIGEON_CHRONICLE_API_KEY` | Ключ OpenCode Go для недельной хроники ([ADR-0014](adr/0014-weekly-llm-chronicle.md)). Без ключа хроника выключена | не задан |
+| `PIGEON_CHRONICLE_MODEL` | Модель хроники | `glm-5.3-flash` |
+| `PIGEON_CHRONICLE_BASE_URL` | Базовый адрес OpenAI-совместимого API | `https://opencode.ai/inference/go/openai/v1` |
+
+С ключом хроника включается во всех настроенных чатах: раз в неделю имена игроков и игровая статистика прошлой недели уходят в OpenCode Go, справка бота говорит об этом. Выключение — удалить ключ и перезапустить бота. Другая модель, например `deepseek-v4.1-flash`, требует сверить таблицу приватности OpenCode; для DeepSeek в настройках воркспейса нужен регион Global. В логе при старте есть строка `weekly chronicle on, model …`; сбои запроса пишутся как `chronicle unavailable (<класс ошибки>)` без ключа, имён и текста.
 
 Настройки можно положить в файл `.env` в корне проекта. Он не попадает в git и в образ.
 
