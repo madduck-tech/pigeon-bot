@@ -48,7 +48,12 @@ def _valid_timezone(name: str) -> bool:
 
 
 def build_router(
-    store: Store, clock: Clock, content: Content, rng: random.Random, gift_provider=None
+    store: Store,
+    clock: Clock,
+    content: Content,
+    rng: random.Random,
+    gift_provider=None,
+    chronicle_enabled: bool = False,
 ) -> Router:
     router = Router(name="pigeon")
     gift_provider = gift_provider or OboobsClient()
@@ -100,7 +105,7 @@ def build_router(
 
     @command("help", needs_setup=False)
     async def help_(message: Message, args: list[str]) -> None:
-        await message.answer(texts.HELP)
+        await message.answer(texts.help_text(chronicle_enabled))
 
     @command("setup", needs_setup=False, admin_only=True)
     async def setup(message: Message, args: list[str]) -> None:

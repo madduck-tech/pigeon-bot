@@ -14,8 +14,10 @@ from pigeon.clock import Clock, SystemClock
 from pigeon.config import Settings
 from pigeon.content import Content, load_content
 from pigeon.handlers.pigeon import build_router
+from pigeon.llm.opencode import OpenCodeClient
 from pigeon.repo.store import Store
-from pigeon.scheduler import arrivals, fortunes
+from pigeon.scheduler import arrivals, chronicle, fortunes
+from pigeon.services.chronicle import ChronicleModel
 from pigeon.telegram.commands import publish_menus
 from pigeon.telegram.messages import TelegramArrivalSender
 
@@ -52,6 +54,28 @@ async def _scheduler_loop(
         await asyncio.sleep(SCHEDULER_INTERVAL_SECONDS)
 
 
+async def _chronicle_loop(
+    store: Store, clock: Clock, model: ChronicleModel, content: Content
+) -> None:
+    """Its own loop: waiting for the model must not hold up arrivals or posts (ADR-0014)."""
+    while True:
+        try:
+            await chronicle.tick(store, clock, model, content.chronicle, content.quests)
+        except Exception:
+            log.exception("chronicle pass failed")
+        await asyncio.sleep(SCHEDULER_INTERVAL_SECONDS)
+
+
+def chronicle_model(settings: Settings) -> OpenCodeClient | None:
+    """The chronicle client, or None when no key is set and the chronicle is off."""
+    key = settings.chronicle_api_key
+    if key is None or not key.get_secret_value().strip():
+        return None
+    return OpenCodeClient(
+        key.get_secret_value().strip(), settings.chronicle_model, settings.chronicle_base_url
+    )
+
+
 async def run_bot(settings: Settings) -> None:
     if settings.bot_token is None:
         raise ValueError("PIGEON_BOT_TOKEN is not set")
@@ -61,13 +85,18 @@ async def run_bot(settings: Settings) -> None:
     clock = SystemClock()
     dp = Dispatcher()
     rng = random.Random()
-    dp.include_router(build_router(store, clock, content, rng))
+    model = chronicle_model(settings)
+    dp.include_router(build_router(store, clock, content, rng, chronicle_enabled=model is not None))
     await publish_menus(bot)
-    scheduler = asyncio.create_task(_scheduler_loop(store, clock, bot, rng, content))
+    tasks = [asyncio.create_task(_scheduler_loop(store, clock, bot, rng, content))]
+    if model is not None and content.chronicle is not None:
+        tasks.append(asyncio.create_task(_chronicle_loop(store, clock, model, content)))
+        log.info("weekly chronicle on, model %s", settings.chronicle_model)
     log.info("pigeon polling and scheduler started")
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
-        scheduler.cancel()
+        for task in tasks:
+            task.cancel()
         store.close()
         await bot.session.close()

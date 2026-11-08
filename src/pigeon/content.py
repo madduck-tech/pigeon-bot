@@ -146,6 +146,26 @@ class ShooTexts:
 
 
 @dataclass(frozen=True)
+class ChroniclePrompt:
+    """The persona and the instruction of the weekly chronicle (ADR-0014)."""
+
+    system: str
+    instruction: str
+
+
+def _chronicle(raw) -> ChroniclePrompt:
+    if not isinstance(raw, dict):
+        raise ValueError("chronicle.yaml must be a mapping")
+    parts = {}
+    for key in ("system", "instruction"):
+        value = raw.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"chronicle.yaml {key} must be a non-empty string")
+        parts[key] = value.strip()
+    return ChroniclePrompt(**parts)
+
+
+@dataclass(frozen=True)
 class Content:
     fortunes: tuple[Fortune, ...]
     achievements: dict[str, Achievement]
@@ -156,6 +176,7 @@ class Content:
     hits: dict[str, tuple[str, ...]] | None = None
     quests: tuple[Quest, ...] = ()
     dove_names: tuple[str, ...] = ()  # female names for the adult arrival
+    chronicle: ChroniclePrompt | None = None
 
 
 def _read(directory: Path, name: str):
@@ -225,4 +246,5 @@ def load_content(directory: Path) -> Content:
         hits=hits,
         quests=_quests(_read(directory, "quests.yaml")),
         dove_names=dove_names,
+        chronicle=_chronicle(_read(directory, "chronicle.yaml")),
     )

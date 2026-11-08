@@ -102,7 +102,7 @@ class FakeSession(BaseSession):
 
 
 class Harness:
-    def __init__(self, store: Store, clock: FixedClock) -> None:
+    def __init__(self, store: Store, clock: FixedClock, chronicle_enabled: bool = False) -> None:
         self.store = store
         self.clock = clock
         self.session = FakeSession()
@@ -111,7 +111,14 @@ class Harness:
         self.rng = Rolls(1)
         self.gifts = FakeGiftProvider()
         self.dp.include_router(
-            build_router(store, clock, CONTENT, self.rng, gift_provider=self.gifts)
+            build_router(
+                store,
+                clock,
+                CONTENT,
+                self.rng,
+                gift_provider=self.gifts,
+                chronicle_enabled=chronicle_enabled,
+            )
         )
         self.update_id = 0
 
@@ -190,6 +197,18 @@ async def harness(store, clock):
     h = Harness(store, clock)
     yield h
     await h.bot.session.close()
+
+
+async def test_help_names_the_chronicle_service_only_when_it_is_on(store, clock) -> None:
+    for enabled in (False, True):
+        h = Harness(store, clock, chronicle_enabled=enabled)
+        await h.command("/help")
+        said = h.session.said()[-1]
+        assert "Приватность" in said
+        assert ("OpenCode Go" in said) is enabled
+        if enabled:
+            assert "имена игроков" in said
+        await h.bot.session.close()
 
 
 VISITOR = game.Visitor("Гена", "Голубь {name} прилетел, курлык.")

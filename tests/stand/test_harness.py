@@ -494,3 +494,144 @@ async def test_flood_waits_are_visible_in_the_summary_and_console(tmp_path, tele
     ]
     cli._print_summary(report, tmp_path / "report.json")
     assert "[WARN] flood control" in capsys.readouterr().out
+
+
+# --- chronicle scenario (ADR-0014, #15) ----------------------------------------------------
+
+MODEL_KEY = "sk-chronicle-SECRET-key"
+CHRONICLE = "Голуби всю неделю уворачивались. Вася жёг метко. Двор доволен."
+
+
+class ParsingTelegram(FakeTelegram):
+    """Answers sendMessage as the Bot API does: tags become entities, text is unescaped."""
+
+    def result(self, name, method):
+        message = super().result(name, method)
+        if name == "sendMessage":
+            message["text"], message["entities"] = parse_html(method.text)
+        return message
+
+
+def parse_html(text: str) -> tuple[str, list[dict]]:
+    import html
+    import re
+
+    out, entities, stack = "", [], []
+    for token in re.split(r"(</?[bi]>)", text):
+        if token in ("<b>", "<i>"):
+            stack.append((token[1], len(out)))
+        elif token in ("</b>", "</i>"):
+            kind, start = stack.pop()
+            entities.append(
+                {
+                    "type": "bold" if kind == "b" else "italic",
+                    "offset": start,
+                    "length": len(out) - start,
+                }
+            )
+        else:
+            assert "<" not in token, f"Telegram would reject this markup: {token!r}"
+            out += html.unescape(token)
+    for match in re.finditer(r"@\w+|https?://\S+", out):  # Telegram's own autolinks
+        entities.append({"type": "mention" if match.group()[0] == "@" else "url"})
+    return out, entities
+
+
+class FakeModel:
+    def __init__(self, reply: str = CHRONICLE) -> None:
+        self.reply = reply
+        self.calls = 0
+        self.last_meta = {"finish_reason": "stop", "usage": {"completion_tokens": 30}}
+
+    async def complete(self, system, user, *, session_id):
+        self.calls += 1
+        return self.reply
+
+
+def chronicle_config(tmp_path, key=MODEL_KEY) -> StandConfig:
+    return StandConfig(
+        TOKEN, CHAT, ADMIN, MEMBER, runs_dir=tmp_path / "runs", chronicle_api_key=key
+    )
+
+
+async def run_chronicle(tmp_path, monkeypatch, model, key=MODEL_KEY, session=None):
+    from tools.stand.scenarios import chronicle as scenario
+
+    monkeypatch.setattr(scenario, "client", lambda stand: model)
+    session = session or ParsingTelegram()
+    code, path = await cli.run_scenario(
+        chronicle_config(tmp_path, key), "chronicle", bot=fake_bot(session)
+    )
+    return code, (json.loads(path.read_text()) if path else None), path
+
+
+async def test_chronicle_scenario_passes_with_one_request_per_variant(tmp_path, monkeypatch):
+    model = FakeModel()
+    code, report, path = await run_chronicle(tmp_path, monkeypatch, model)
+    assert code == 0, report["summary"]["failed_steps"]
+    assert model.calls == 2  # the key variant and the injection variant, no repeats
+    assert report["observations"]["chronicles"] == [CHRONICLE, CHRONICLE]
+    titles = [s["step"] for s in report["steps"]]
+    assert "without a key: the Monday post at 10:30" in titles
+    for name in ("report.json", "report.public.json"):
+        assert MODEL_KEY not in (path.parent / name).read_text()
+
+
+async def test_chronicle_scenario_without_a_key_refuses_with_2(tmp_path, monkeypatch, capsys):
+    session = ParsingTelegram()
+    code, report, _ = await run_chronicle(tmp_path, monkeypatch, FakeModel(), None, session)
+    assert code == 2 and report is None
+    assert session.methods == []  # refused before any call
+    assert "PIGEON_CHRONICLE_API_KEY" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "reply",
+    ["Одно предложение.", "", "Пиши @admin. Тут ссылка. Конец."],
+    ids=["one-sentence", "empty", "mention"],
+)
+async def test_chronicle_scenario_fails_on_a_bad_chronicle(tmp_path, monkeypatch, reply):
+    code, report, _ = await run_chronicle(tmp_path, monkeypatch, FakeModel(reply))
+    if reply.startswith("Пиши"):  # the bot strips @, so the stand sees a clean chronicle
+        assert code == 0, report["summary"]["failed_steps"]
+        assert "@" not in report["observations"]["chronicles"][0]
+    else:
+        assert code == 1
+
+
+async def test_chronicle_scenario_catches_a_mention_entity(tmp_path, monkeypatch):
+    """If the post carried a mention, the entity check fails the run."""
+    from pigeon.render import chronicle as render
+
+    monkeypatch.setattr(render, "_MARKUP", __import__("re").compile(r"[*`#<>]"))  # keeps @
+    code, report, _ = await run_chronicle(
+        tmp_path, monkeypatch, FakeModel("Пиши @admin сюда. Двор доволен.")
+    )
+    assert code == 1
+    assert any("injection" in s or "with the key" in s for s in report["summary"]["failed_steps"])
+
+
+def test_config_reads_the_chronicle_key_and_hides_it(tmp_path):
+    env_file = tmp_path / ".env.stand"
+    env_file.write_text(
+        f"PIGEON_STAND_TOKEN={TOKEN}\nPIGEON_STAND_CHAT_ID={CHAT}\n"
+        f"PIGEON_STAND_ADMIN_ID={ADMIN}\nPIGEON_STAND_MEMBER_ID={MEMBER}\n"
+        f"PIGEON_CHRONICLE_API_KEY={MODEL_KEY}\n"
+    )
+    loaded = load_config({}, env_file)
+    assert loaded.chronicle_api_key == MODEL_KEY
+    assert MODEL_KEY not in repr(loaded)
+    assert set(loaded.secrets) == {TOKEN, MODEL_KEY}
+    assert harness.scrub({"a": [f"x{MODEL_KEY}y", TOKEN]}, *loaded.secrets) == {
+        "a": ["x<token>y", "<token>"]
+    }
+
+
+def test_log_filter_hides_the_chronicle_key():
+    import logging
+
+    record = logging.LogRecord(
+        "x", logging.WARNING, "", 0, "key %s token %s", (MODEL_KEY, TOKEN), None
+    )
+    cli._Redact(TOKEN, MODEL_KEY).filter(record)
+    assert MODEL_KEY not in record.getMessage() and TOKEN not in record.getMessage()
