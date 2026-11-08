@@ -15,10 +15,11 @@ NAME_CHARS = 32  # a participant name as it goes to the model
 
 TITLE = "📜 <b>Хроника недели</b>"
 
-_URL = re.compile(r"(?i)\b(?:[a-z][a-z0-9+.-]*://|www\.)\S*")
+_URL = re.compile(r"(?i)\b(?:[a-z][a-z0-9+.-]*://|www\.|(?:mailto|javascript|tel|tg):)\S*")
 # Domain-like words such as example.com or t.me/x: Telegram would turn them into links.
-_DOMAIN = re.compile(r"(?i)\b(?:[\w-]+\.)+(?:[a-z]{2,24}|рф)\b(?:/\S*)?")
-_MARKUP = re.compile(r"[*`#<>@＠]")
+# Cyrillic TLDs (.рф, .онлайн, .рус) count too.
+_DOMAIN = re.compile(r"(?i)\b(?:[\w-]+\.)+(?:[a-z]{2,24}|[а-яё]{2,24})\b(?:/\S*)?")
+_MARKUP = re.compile(r"[*`#<>@＠﹫]")
 _SPACES = re.compile(r"\s+")
 _SPACE_BEFORE_PUNCT = re.compile(r"\s+([,.!?…:;])")
 _SENTENCE = re.compile(r"[^.!?…]+(?:[.!?…]+[»\")]*|$)")
@@ -44,7 +45,7 @@ def clean(raw: str | None) -> str | None:
     if len(ends) > MAX_SENTENCES:
         text = text[: ends[MAX_SENTENCES - 1]]
     text = text.strip()
-    if not text or len(text) > MAX_CHARS:
+    if not any(ch.isalpha() for ch in text) or len(text) > MAX_CHARS:
         return None
     return text
 

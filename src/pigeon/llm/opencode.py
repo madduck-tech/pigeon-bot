@@ -12,6 +12,7 @@ import json
 import aiohttp
 
 from pigeon import __version__
+from pigeon.llm.errors import ModelUnavailable
 
 DEFAULT_BASE_URL = "https://opencode.ai/inference/go/openai/v1"
 DEFAULT_MODEL = "glm-5.3-flash"
@@ -21,9 +22,7 @@ MAX_TOKENS = 800
 TEMPERATURE = 0.9
 CHUNK_SIZE = 16 * 1024
 
-
-class ModelUnavailable(Exception):
-    """The model gave no usable reply."""
+__all__ = ["ModelUnavailable", "OpenCodeClient"]
 
 
 class OpenCodeClient:

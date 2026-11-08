@@ -15,6 +15,7 @@ from typing import Protocol
 from pigeon.budget import limits
 from pigeon.clock import Clock
 from pigeon.content import ChroniclePrompt, Quest
+from pigeon.llm.errors import ModelUnavailable
 from pigeon.render import chronicle as render
 from pigeon.repo.store import ChatSettings, ChronicleWeek, Store
 from pigeon.services import weekly
@@ -122,6 +123,13 @@ async def prepare(
         if text is None:
             log.warning("chat %s: chronicle reply is empty or too long", chat.chat_id)
     except Exception as exc:  # the chronicle is optional; the post goes out without it
-        log.warning("chat %s: chronicle unavailable (%s)", chat.chat_id, type(exc).__name__)
+        # ModelUnavailable messages are fixed strings such as "HTTP 401": no key, names or text.
+        reason = str(exc) if isinstance(exc, ModelUnavailable) else ""
+        log.warning(
+            "chat %s: chronicle unavailable (%s%s)",
+            chat.chat_id,
+            type(exc).__name__,
+            f": {reason}" if reason else "",
+        )
     store.finish_chronicle(chat.chat_id, week_key, text)
     return "ready" if text else "failed"

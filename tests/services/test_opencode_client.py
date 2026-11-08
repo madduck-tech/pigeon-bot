@@ -80,6 +80,20 @@ async def _redirect(request):
     raise web.HTTPFound("http://127.0.0.1:1/elsewhere")
 
 
+async def test_redirect_is_not_followed(server) -> None:
+    base, state = server
+
+    async def to_ok(request):
+        if request.path.endswith("/chat/completions"):
+            raise web.HTTPFound(base + "chat/completions?again=1")
+        return web.json_response(reply("followed"))
+
+    state["handler"] = to_ok
+    with pytest.raises(ModelUnavailable, match="HTTP 302"):
+        await OpenCodeClient(KEY, base_url=base).complete("s", "u", session_id="x")
+    assert len(state["requests"]) == 1
+
+
 async def _huge(request):
     return web.json_response(reply("x" * (opencode.BODY_LIMIT + 10)))
 

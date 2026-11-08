@@ -432,6 +432,7 @@ async def test_hostile_name_stays_data_and_cannot_break_the_post(store) -> None:
     assert await prepare(store, model) == "ready"
     sent_name = model.facts()["players"][0]["name"]
     assert sent_name == render.clean_name(HOSTILE)
+    assert model.facts()["golden_spit_holder"] == sent_name  # the trophy holder is cleaned too
     assert len(sent_name) <= render.NAME_CHARS and "\n" not in sent_name
     text = (await post(store)).sent[0][1]
     chronicle_line = text.split("Хроника недели</b>\n", 1)[1].split("\n", 1)[0]
@@ -455,6 +456,11 @@ def test_clean_rules() -> None:
         "Смотри и тут."
     )
     assert render.clean("**Жирно** и `код` и #тег") == "Жирно и код и тег"
+    assert render.clean("Сайты голуби.онлайн, двор.рус и двор.рф закрыты.") == ("Сайты, и закрыты.")
+    assert render.clean("Пиши mailto:a@b.c или javascript:alert(1) и tel:+7999 ﹫x.") == (
+        "Пиши или и x."
+    )
+    assert render.clean("...") is None and render.clean("!!! ???") is None
     assert render.clean("Голубь‮улетел​.") == "Голубь улетел."
     assert render.clean("«Цитата целиком.»") == "Цитата целиком."
     assert render.clean("Т.е. голубь улетел.") == "Т.е. голубь улетел."
@@ -475,7 +481,7 @@ async def test_logs_hold_no_names_or_reply(store, caplog) -> None:
     model = FakeModel(error=ModelUnavailable("HTTP 401"))
     with caplog.at_level(logging.WARNING, logger="pigeon.chronicle"):
         await prepare(store, model)
-    assert "chronicle unavailable (ModelUnavailable)" in caplog.text
+    assert "chronicle unavailable (ModelUnavailable: HTTP 401)" in caplog.text
     assert "Секретное" not in caplog.text
     caplog.clear()
     model = FakeModel()
