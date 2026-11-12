@@ -20,6 +20,7 @@ from typing import Any
 
 from aiogram import Bot, Dispatcher
 from aiogram.dispatcher.event.bases import UNHANDLED
+from aiogram.exceptions import TelegramForbiddenError
 from aiogram.methods import TelegramMethod
 from aiogram.types import Update
 
@@ -216,14 +217,27 @@ class Stand:
         chat_type = chat_type_of(self.config.chat_id)
         if chat_type is None:
             raise StandGuardError(f"chat id {self.config.chat_id} is not a group")
-        member = await self.bot.get_chat_member(self.config.chat_id, me.id)
-        step.check(
-            "the bot is a member of the stand chat",
-            member.status not in ("left", "kicked"),
-            member.status,
-        )
-        if member.status in ("left", "kicked"):
-            raise StandGuardError("the test bot is not in the stand chat")
+        if self.scenario == "forbidden":
+            # Only this adverse scenario accepts an absent bot, still in the configured group.
+            try:
+                member = await self.bot.get_chat_member(self.config.chat_id, me.id)
+            except TelegramForbiddenError:
+                step.calls[-1]["expected_error"] = "removed test bot membership probe"
+                step.check("Telegram refused the removed bot membership probe", True)
+            else:
+                removed = member.status in ("left", "kicked")
+                step.check("the test bot was removed from the stand chat", removed, member.status)
+                if not removed:
+                    raise StandGuardError("forbidden scenario requires the test bot to be removed")
+        else:
+            member = await self.bot.get_chat_member(self.config.chat_id, me.id)
+            step.check(
+                "the bot is a member of the stand chat",
+                member.status not in ("left", "kicked"),
+                member.status,
+            )
+            if member.status in ("left", "kicked"):
+                raise StandGuardError("the test bot is not in the stand chat")
         self.chat = {"id": self.config.chat_id, "type": chat_type}
 
         self.run_dir.mkdir(parents=True, exist_ok=True)

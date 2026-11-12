@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
-from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, ChatMemberUpdated, Message
 
 from pigeon.budget import limits
 from pigeon.clock import Clock
@@ -57,6 +57,12 @@ def build_router(
 ) -> Router:
     router = Router(name="pigeon")
     gift_provider = gift_provider or OboobsClient()
+
+    @router.my_chat_member(F.chat.type.in_(GROUP_TYPES))
+    async def membership_changed(update: ChatMemberUpdated) -> None:
+        if update.new_chat_member.status in {"kicked", "left"}:
+            store.disable_chat(update.chat.id)
+            log.warning("chat %s: bot removed; chat disabled", update.chat.id)
 
     def award_names(codes: list[str]) -> list[str]:
         # Achievements of closed mechanics stay in old databases but have no text any more.

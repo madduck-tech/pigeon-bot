@@ -436,6 +436,11 @@ class Store:
         row = self._conn.execute("SELECT * FROM chats WHERE chat_id = ?", (chat_id,)).fetchone()
         return _chat(row) if row else None
 
+    def disable_chat(self, chat_id: int) -> None:
+        """Stop automatic work without deleting the chat's history or settings."""
+        with self._conn:
+            self._conn.execute("UPDATE chats SET enabled = 0 WHERE chat_id = ?", (chat_id,))
+
     def is_enabled(self, chat_id: int) -> bool:
         row = self._conn.execute(
             "SELECT enabled FROM chats WHERE chat_id = ?", (chat_id,)
