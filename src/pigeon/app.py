@@ -16,8 +16,9 @@ from pigeon.content import Content, load_content
 from pigeon.handlers.pigeon import build_router
 from pigeon.llm.opencode import OpenCodeClient
 from pigeon.repo.store import Store
-from pigeon.scheduler import arrivals, chronicle, fortunes
+from pigeon.scheduler import arrivals, chronicle, courier, fortunes
 from pigeon.services.chronicle import ChronicleModel
+from pigeon.services.fortune_decks import migrate_courier
 from pigeon.telegram.commands import publish_menus
 from pigeon.telegram.messages import TelegramArrivalSender
 
@@ -35,6 +36,7 @@ async def _scheduler_pass(store, clock, rng, sender, content: Content) -> None:
     """One pass. A failure here is logged: the task must outlive it, or everything stops."""
     for step in (
         lambda: arrivals.tick(store, clock, rng, sender, content),
+        lambda: courier.tick(store, clock, rng, sender, content.fortunes, content.names),
         lambda: fortunes.tick(
             store, clock, rng, sender, content.fortunes, content.names, content.quests
         ),
@@ -81,6 +83,7 @@ async def run_bot(settings: Settings) -> None:
         raise ValueError("PIGEON_BOT_TOKEN is not set")
     content = load_content(settings.content_dir)
     store = Store(settings.db_path)
+    migrate_courier(store, content.fortunes)
     bot = build_bot(settings.bot_token.get_secret_value())
     clock = SystemClock()
     dp = Dispatcher()

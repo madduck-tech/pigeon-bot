@@ -22,7 +22,6 @@ class FortuneFormat(StrEnum):
     SCENE = "scene"
     SPREAD = "spread"
     CHAT = "chat"
-    SERIAL = "serial"
 
 
 @dataclass(frozen=True)
@@ -30,8 +29,6 @@ class Fortune:
     id: str
     format: FortuneFormat
     text: str
-    part: int | None = None
-    next: str | None = None
 
 
 def _fortunes(raw) -> tuple[Fortune, ...]:
@@ -39,7 +36,7 @@ def _fortunes(raw) -> tuple[Fortune, ...]:
         raise ValueError("fortunes must be a non-empty list")
     result = []
     for item in raw:
-        if not isinstance(item, dict) or set(item) - {"id", "format", "text", "part", "next"}:
+        if not isinstance(item, dict) or set(item) - {"id", "format", "text"}:
             raise ValueError("invalid fortune fields")
         try:
             ident, fmt, text = item["id"], FortuneFormat(item["format"]), item["text"]
@@ -54,41 +51,12 @@ def _fortunes(raw) -> tuple[Fortune, ...]:
             ]
             if fields != ([("name", "", None)] if fmt == FortuneFormat.SCENE else []):
                 raise ValueError("invalid fortune placeholders")
-            part, nxt = item.get("part"), item.get("next")
-            if fmt == FortuneFormat.SERIAL:
-                if (
-                    type(part) is not int
-                    or part < 1
-                    or (nxt is not None and not isinstance(nxt, str))
-                ):
-                    raise ValueError("invalid serial")
-            elif "part" in item or "next" in item:
-                raise ValueError("serial fields on non-serial fortune")
-            result.append(Fortune(ident, fmt, text, part, nxt))
+            result.append(Fortune(ident, fmt, text))
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"invalid fortune: {exc}") from exc
     by_id = {f.id: f for f in result}
     if len(by_id) != len(result):
         raise ValueError("duplicate fortune id")
-    visited = set()
-    for root in (f for f in result if f.format == FortuneFormat.SERIAL and f.part == 1):
-        current, count = root, 0
-        while current:
-            if (
-                current.id in visited
-                or current.part != count + 1
-                or current.format != FortuneFormat.SERIAL
-            ):
-                raise ValueError("invalid serial chain")
-            visited.add(current.id)
-            count += 1
-            if current.next and current.next not in by_id:
-                raise ValueError("invalid serial next")
-            current = by_id.get(current.next)
-        if count not in (2, 3):
-            raise ValueError("invalid serial length")
-    if visited != {f.id for f in result if f.format == FortuneFormat.SERIAL}:
-        raise ValueError("invalid serial chain")
     return tuple(result)
 
 

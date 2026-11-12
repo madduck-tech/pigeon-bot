@@ -130,6 +130,21 @@ CREATE TABLE IF NOT EXISTS daily_fortunes (
     local_day TEXT NOT NULL,
     PRIMARY KEY (chat_id, local_day)
 );
+CREATE TABLE IF NOT EXISTS courier_plans (
+    chat_id INTEGER NOT NULL, local_date TEXT NOT NULL, planned_at TEXT,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'fired', 'skipped')),
+    PRIMARY KEY (chat_id, local_date)
+);
+CREATE TABLE IF NOT EXISTS courier_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL,
+    fortune_id TEXT NOT NULL, rendered_text TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS courier_fortunes (
+    chat_id INTEGER NOT NULL, local_day TEXT NOT NULL, fortune_id TEXT NOT NULL,
+    rendered_text TEXT NOT NULL, sent_at TEXT NOT NULL,
+    PRIMARY KEY (chat_id, local_day)
+);
+CREATE TABLE IF NOT EXISTS content_migrations (name TEXT PRIMARY KEY);
 -- The weekly chronicle (ADR-0014). week_key is the Monday of the post; text is set when ready.
 CREATE TABLE IF NOT EXISTS chronicles (
     chat_id    INTEGER NOT NULL,
@@ -903,7 +918,7 @@ class Store:
 
     def fortune_history(self, chat_id: int, start: str, end: str) -> set[str]:
         ids: set[str] = set()
-        for table in ("fortunes", "daily_fortunes"):
+        for table in ("fortunes", "daily_fortunes", "courier_fortunes"):
             ids.update(
                 row[0]
                 for row in self._conn.execute(
@@ -956,6 +971,98 @@ class Store:
                 "UPDATE daily_fortunes SET sent_at=? WHERE chat_id=? AND local_day=?",
                 (_ts(now), chat_id, local_day),
             )
+
+    # courier: reservations are not published history
+    def courier_migrated(self) -> bool:
+        return (
+            self._conn.execute(
+                "SELECT 1 FROM content_migrations WHERE name='courier-v1'"
+            ).fetchone()
+            is not None
+        )
+
+    def legacy_pending_fortunes(self) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT chat_id, local_day, fortune_id, rendered_text FROM daily_fortunes "
+            "WHERE sent_at IS NULL AND fortune_id IS NOT NULL ORDER BY local_day, chat_id"
+        ).fetchall()
+
+    def upgrade_courier(self, pending: list[tuple[int, str, str]]) -> None:
+        """Called in the migration transaction; pending texts have been rendered by the service."""
+        for chat_id, ident, rendered in pending:
+            self.enqueue_courier(chat_id, ident, rendered)
+        self._conn.execute(
+            "DELETE FROM daily_fortunes WHERE sent_at IS NULL AND fortune_id IS NOT NULL"
+        )
+        self._conn.execute("UPDATE fortune_decks SET forced_json='[]'")
+        self._conn.execute("INSERT INTO content_migrations VALUES ('courier-v1')")
+
+    def courier_plan(self, chat_id: int, local_day: str) -> ArrivalPlan | None:
+        row = self._conn.execute(
+            "SELECT * FROM courier_plans WHERE chat_id=? AND local_date=?", (chat_id, local_day)
+        ).fetchone()
+        return (
+            ArrivalPlan(chat_id, local_day, _opt_dt(row["planned_at"]), row["status"])
+            if row
+            else None
+        )
+
+    def save_courier_plan(
+        self, chat_id: int, day: str, planned_at: datetime | None, status: str
+    ) -> None:
+        with self._write():
+            self._conn.execute(
+                "INSERT INTO courier_plans VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(chat_id, local_date) DO UPDATE SET "
+                "planned_at=excluded.planned_at, status=excluded.status",
+                (chat_id, day, _ts(planned_at) if planned_at else None, status),
+            )
+
+    def courier_count(self, chat_id: int, week_key: str, next_week: str) -> int:
+        return self._conn.execute(
+            "SELECT COUNT(*) FROM courier_fortunes "
+            "WHERE chat_id=? AND local_day>=? AND local_day<?",
+            (chat_id, week_key, next_week),
+        ).fetchone()[0]
+
+    def courier_published(self, chat_id: int, local_day: str) -> bool:
+        return (
+            self._conn.execute(
+                "SELECT 1 FROM courier_fortunes WHERE chat_id=? AND local_day=?",
+                (chat_id, local_day),
+            ).fetchone()
+            is not None
+        )
+
+    def pending_courier(self, chat_id: int) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM courier_queue WHERE chat_id=? ORDER BY id LIMIT 1", (chat_id,)
+        ).fetchone()
+
+    def enqueue_courier(self, chat_id: int, ident: str, rendered: str) -> None:
+        self._conn.execute(
+            "INSERT INTO courier_queue (chat_id, fortune_id, rendered_text) VALUES (?, ?, ?)",
+            (chat_id, ident, rendered),
+        )
+
+    def confirm_courier(
+        self, chat_id: int, day: str, published_day: str, queue_id: int, now: datetime
+    ) -> None:
+        with self.transaction():
+            row = self._conn.execute(
+                "SELECT * FROM courier_queue WHERE chat_id=? AND id=?", (chat_id, queue_id)
+            ).fetchone()
+            if row is None:
+                raise ValueError("courier reservation missing")
+            self._conn.execute(
+                "INSERT INTO courier_fortunes VALUES (?, ?, ?, ?, ?)",
+                (chat_id, published_day, row["fortune_id"], row["rendered_text"], _ts(now)),
+            )
+            self._conn.execute(
+                "DELETE FROM courier_queue WHERE chat_id=? AND id=?", (chat_id, queue_id)
+            )
+            plan = self.courier_plan(chat_id, day)
+            self.save_courier_plan(chat_id, day, plan.planned_at if plan else None, "fired")
 
     def week_leaderboard(
         self, chat_id: int, start: datetime, end: datetime, limit: int = 10

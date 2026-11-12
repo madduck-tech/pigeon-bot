@@ -1,4 +1,4 @@
-"""The daily fortune: one post per chat per local day, once the morning has come.
+"""The Monday summary: the former daily slot is now weekly only.
 
 Runs apart from arrivals, so a failed post cannot cost a chat its pigeon, or the other way round.
 """
@@ -16,7 +16,7 @@ from pigeon.budget import limits
 from pigeon.clock import Clock
 from pigeon.content import Fortune, Quest
 from pigeon.repo.store import ChatSettings, Store
-from pigeon.services import fortune, fortune_decks, weekly
+from pigeon.services import fortune, weekly
 
 log = logging.getLogger("pigeon.fortunes")
 
@@ -37,19 +37,20 @@ async def _post(
 ) -> None:
     now = clock.now()
     weekly.ensure(store, chat.chat_id, now, quests, rng)
-    if not fortune.daily_due(chat, now):
+    if (
+        not quests
+        or limits.chat_local(chat, now).weekday() != 0
+        or not fortune.daily_due(chat, now)
+    ):
         return
     local_day = limits.chat_local(chat, now).date().isoformat()
-    if quests and limits.chat_local(chat, now).weekday() == 0:
-        with store.transaction():
-            issue = store.get_fortune_issue(chat.chat_id, 0, local_day)
-            if issue:
-                rendered = issue.rendered_text if issue.sent_at is None else None
-            else:
-                rendered = weekly.monday_text(store, chat.chat_id, now, quests)
-                store.save_fortune_issue(chat.chat_id, 0, local_day, None, rendered)
-    else:
-        rendered = fortune_decks.prepare(store, chat.chat_id, 0, local_day, lines, names, rng)
+    with store.transaction():
+        issue = store.get_fortune_issue(chat.chat_id, 0, local_day)
+        if issue:
+            rendered = issue.rendered_text if issue.sent_at is None else None
+        else:
+            rendered = weekly.monday_text(store, chat.chat_id, now, quests)
+            store.save_fortune_issue(chat.chat_id, 0, local_day, None, rendered)
     if rendered is None:
         return
     await sender.send_text(chat.chat_id, rendered)

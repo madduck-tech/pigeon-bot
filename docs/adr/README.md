@@ -33,6 +33,8 @@ ADR-0002–0011 зарегистрированы ретроспективно 20
 | [0014](0014-weekly-llm-chronicle.md) | Недельная хроника от LLM в понедельничном посте | 2026-11-08 | accepted | Дополняет [0004](0004-privacy-and-minimal-data.md) (имена уходят внешнему сервису) |
 | [0015](0015-agent-test-stand.md) | Тестовый стенд в Telegram с синтетическими апдейтами | 2026-11-08 | accepted | — |
 
+| [0016](0016-fortune-courier.md) | Утренний голубь-предсказатель без многочастных пророчеств | 2026-11-12 | accepted | Частично пересматривает [0001](0001-diversify-pigeon-experience.md), [0007](0007-local-schedule-and-noise-budget.md), [0009](0009-yaml-content-startup-validation.md) |
+
 ## Новый документ
 
 1. Скопируйте [TEMPLATE.md](TEMPLATE.md) в `NNNN-short-title.md`, используя следующий последовательный номер.

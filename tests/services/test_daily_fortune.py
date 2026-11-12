@@ -43,7 +43,7 @@ def store(tmp_path):
 
 
 async def _tick(store, clock, sender) -> None:
-    await fortunes.tick(store, clock, random.Random(1), sender, LINES)
+    await fortunes.tick(store, clock, random.Random(1), sender, LINES, quests=CONTENT.quests)
 
 
 async def test_comes_an_hour_after_quiet_hours(store) -> None:
@@ -53,8 +53,8 @@ async def test_comes_an_hour_after_quiet_hours(store) -> None:
     assert sender.sent == []
     clock.set(TEN)
     await _tick(store, clock, sender)
-    assert sender.sent == [(CHAT, texts.render_fortune(LINES[0]))]
-    assert "а &lt; б" in sender.sent[0][1]  # sent as HTML, so content is escaped
+    assert len(sender.sent) == 1
+    assert "Новая неделя" in sender.sent[0][1]
 
 
 async def test_once_per_local_day(store) -> None:
@@ -66,7 +66,7 @@ async def test_once_per_local_day(store) -> None:
     assert len(sender.sent) == 1
     clock.set(TEN + timedelta(days=1))
     await _tick(store, clock, sender)
-    assert len(sender.sent) == 2
+    assert len(sender.sent) == 1  # Tuesday has no daily post
 
 
 async def test_follows_the_chats_own_quiet_hours(store) -> None:
