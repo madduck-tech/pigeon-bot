@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
-from aiogram.exceptions import TelegramMigrateToChat
+from aiogram.exceptions import TelegramForbiddenError, TelegramMigrateToChat
 
 from pigeon.budget import limits
 from pigeon.services import fortune_decks
@@ -78,6 +78,9 @@ async def tick(store, clock, rng, sender, fortunes, names=("Гена",)):
     for chat in store.enabled_chats():
         try:
             await _tick_chat(store, clock, rng, sender, fortunes, names, chat)
+        except TelegramForbiddenError:
+            store.disable_chat(chat.chat_id)
+            log.warning("chat %s: Telegram access forbidden; chat disabled", chat.chat_id)
         except TelegramMigrateToChat as exc:
             store.migrate_chat(chat.chat_id, exc.migrate_to_chat_id)
         except Exception:

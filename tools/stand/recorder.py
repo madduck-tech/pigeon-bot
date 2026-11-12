@@ -86,6 +86,7 @@ class Recorder(BaseRequestMiddleware):
         except TelegramAPIError as exc:
             record["ok"] = False
             record["error"] = exc.message
+            record["error_type"] = type(exc).__name__
             if isinstance(exc, TelegramNetworkError):
                 record["network"] = True
             if (

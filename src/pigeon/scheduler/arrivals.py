@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
-from aiogram.exceptions import TelegramMigrateToChat
+from aiogram.exceptions import TelegramForbiddenError, TelegramMigrateToChat
 
 from pigeon.budget import limits
 from pigeon.clock import Clock
@@ -108,9 +108,11 @@ async def _tick_chat(
         return
     try:
         message_id = await sender.send_arrival(chat_id, arrival)
-    except Exception:
+    except Exception as exc:
         # Nobody saw it, so it must not count as an arrival. The plan stays and retries.
-        if game.delete_unsent_event(store, chat_id, arrival.id):
+        if game.delete_unsent_event(store, chat_id, arrival.id) or isinstance(
+            exc, TelegramForbiddenError
+        ):
             raise
         log.warning("chat %s: arrival %s was delivered, response lost", chat_id, arrival.id)
     else:
@@ -131,6 +133,9 @@ async def tick(
         try:
             weekly.ensure(store, chat.chat_id, clock.now(), content.quests, rng)
             await _tick_chat(store, clock, rng, sender, content, chat)
+        except TelegramForbiddenError:
+            store.disable_chat(chat.chat_id)
+            log.warning("chat %s: Telegram access forbidden; chat disabled", chat.chat_id)
         except TelegramMigrateToChat as exc:
             # Safety net for a migration whose service message the bot never received.
             log.warning("chat %s moved to %s", chat.chat_id, exc.migrate_to_chat_id)

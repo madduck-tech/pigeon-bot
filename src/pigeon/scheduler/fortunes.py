@@ -10,7 +10,7 @@ import random
 from collections.abc import Sequence
 from typing import Protocol
 
-from aiogram.exceptions import TelegramMigrateToChat
+from aiogram.exceptions import TelegramForbiddenError, TelegramMigrateToChat
 
 from pigeon.budget import limits
 from pigeon.clock import Clock
@@ -70,6 +70,9 @@ async def tick(
     for chat in store.enabled_chats():
         try:
             await _post(store, clock, rng, sender, lines, names, chat, quests)
+        except TelegramForbiddenError:
+            store.disable_chat(chat.chat_id)
+            log.warning("chat %s: Telegram access forbidden; chat disabled", chat.chat_id)
         except TelegramMigrateToChat as exc:
             log.warning("chat %s moved to %s", chat.chat_id, exc.migrate_to_chat_id)
             store.migrate_chat(chat.chat_id, exc.migrate_to_chat_id)

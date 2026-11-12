@@ -635,3 +635,101 @@ def test_log_filter_hides_the_chronicle_key():
     )
     cli._Redact(TOKEN, MODEL_KEY).filter(record)
     assert MODEL_KEY not in record.getMessage() and TOKEN not in record.getMessage()
+
+
+class RemovedTelegram(FakeTelegram):
+    async def make_request(self, bot, method, timeout=None):
+        if method.__api_method__ in ("sendMessage", "editMessageText"):
+            self.methods.append(method.__api_method__)
+            return self.check_response(
+                bot,
+                method,
+                403,
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error_code": 403,
+                        "description": "Forbidden: bot was kicked from the supergroup chat",
+                    }
+                ),
+            ).result
+        return await super().make_request(bot, method, timeout)
+
+
+@pytest.mark.asyncio
+async def test_forbidden_scenario_exercises_real_ticks_with_removed_bot(tmp_path):
+    session = RemovedTelegram()
+    session.statuses[BOT_ID] = "left"
+    code, report, _ = await run(tmp_path, session, "forbidden")
+    assert code == 0
+    assert report["passed"]
+    assert session.methods.count("sendMessage") == 3
+    assert session.methods.count("editMessageText") == 1
+
+
+@pytest.mark.asyncio
+async def test_forbidden_scenario_refuses_bot_still_present(tmp_path):
+    session = RemovedTelegram()
+    code, report, _ = await run(tmp_path, session, "forbidden")
+    assert code == 2
+    assert not report["passed"]
+    assert not {"sendMessage", "editMessageText"} & set(session.methods)
+
+
+@pytest.mark.asyncio
+async def test_commands_still_refuses_removed_bot(tmp_path):
+    session = RemovedTelegram()
+    session.statuses[BOT_ID] = "left"
+    code, report, _ = await run(tmp_path, session, "commands")
+    assert code == 2
+    assert not report["passed"]
+    assert not {"sendMessage", "editMessageText"} & set(session.methods)
+
+
+@pytest.mark.asyncio
+async def test_forbidden_scenario_cannot_bypass_production_guard(tmp_path):
+    session = RemovedTelegram("golubinskity_bot")
+    session.statuses[BOT_ID] = "left"
+    code, report, _ = await run(tmp_path, session, "forbidden")
+    assert code == 2
+    assert session.methods == ["getMe"]
+    assert not report["passed"]
+
+
+@pytest.mark.asyncio
+async def test_forbidden_scenario_rejects_bad_request_with_forbidden_in_text(tmp_path):
+    session = FakeTelegram()
+    session.statuses[BOT_ID] = "left"
+    session.fail.update(
+        {
+            "sendMessage": "Bad Request: Forbidden is just text here",
+            "editMessageText": "Bad Request: Forbidden is just text here",
+        }
+    )
+    code, report, _ = await run(tmp_path, session, "forbidden")
+    assert code == 1
+    assert not report["passed"]
+    failed = [c for s in report["steps"] for c in s["calls"] if not c.get("ok")]
+    assert failed
+    assert all("expected_error" not in c for c in failed)
+
+
+@pytest.mark.asyncio
+async def test_forbidden_preflight_accepts_typed_membership_forbidden(tmp_path):
+    class InaccessibleMembership(RemovedTelegram):
+        async def make_request(self, bot, method, timeout=None):
+            if method.__api_method__ == "getChatMember":
+                self.methods.append("getChatMember")
+                return self.check_response(
+                    bot,
+                    method,
+                    403,
+                    json.dumps(
+                        {"ok": False, "error_code": 403, "description": "Forbidden: bot was kicked"}
+                    ),
+                ).result
+            return await super().make_request(bot, method, timeout)
+
+    code, report, _ = await run(tmp_path, InaccessibleMembership(), "forbidden")
+    assert code == 0
+    assert report["passed"]
