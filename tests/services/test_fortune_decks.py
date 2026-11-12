@@ -10,14 +10,13 @@ from pigeon.services.fortune_decks import prepare
 from rigged import CONTENT
 
 
-def test_content_distribution_and_invalid_chains():
+def test_content_distribution_and_rejected_chain_fields():
     assert Counter(f.format for f in CONTENT.fortunes) == {
         "classic": 30,
         "omen": 8,
         "scene": 6,
         "spread": 6,
         "chat": 6,
-        "serial": 4,
     }
     with pytest.raises(ValueError):
         _fortunes([{"id": "x", "format": "scene", "text": "{name.__class__}"}])
@@ -25,12 +24,12 @@ def test_content_distribution_and_invalid_chains():
         _fortunes([{"id": "x", "format": "serial", "text": "x", "part": 1, "next": "x"}])
 
 
-def test_daily_deck_and_serial_survive_restart(tmp_path):
+def test_standalone_deck_survives_restart(tmp_path):
     path = tmp_path / "db"
     store = Store(path)
     rng = random.Random(12)
     day = date(2026, 1, 1)
-    for i in range(60):
+    for i in range(56):
         local_day = (day + timedelta(days=i)).isoformat()
         assert prepare(store, -1, 0, local_day, CONTENT.fortunes, CONTENT.names, rng)
         if i == 20:
@@ -40,10 +39,7 @@ def test_daily_deck_and_serial_survive_restart(tmp_path):
         "SELECT fortune_id FROM daily_fortunes ORDER BY local_day"
     ).fetchall()
     ids = [row[0] for row in rows]
-    assert len(set(ids)) == 60
-    for f in CONTENT.fortunes:
-        if f.format == FortuneFormat.SERIAL and f.part == 1:
-            assert ids[ids.index(f.id) + 1] == f.next
+    assert len(set(ids)) == 56
     store.close()
 
 

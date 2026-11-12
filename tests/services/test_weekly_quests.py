@@ -25,9 +25,7 @@ def test_label_identifies_weekly_quest(tmp_path):
     store = Store(tmp_path / "db")
     store.enable_chat(1, NOW, "UTC")
     store.create_quest(1, "2026-11-02", QUESTS[0].id)
-    assert weekly.label(weekly.current(store, 1, NOW, QUESTS)).startswith(
-        "🎯 <b>Задание недели:"
-    )
+    assert weekly.label(weekly.current(store, 1, NOW, QUESTS)).startswith("🎯 <b>Задание недели:")
     store.close()
 
 
@@ -131,8 +129,8 @@ async def test_missed_monday_is_not_replayed(tmp_path):
     await fortunes.tick(
         store, clock, random.Random(1), sender, content.fortunes, content.names, QUESTS
     )
-    assert len(sender.texts) == 1 and "Новая неделя" not in sender.texts[0]
-    assert store.get_fortune_deck(1, "daily", 0) is not None
+    assert sender.texts == []
+    assert store.get_fortune_deck(1, "daily", 0) is None
     assert store.get_fortune_issue(1, 0, "2026-11-02") is None
     store.close()
 

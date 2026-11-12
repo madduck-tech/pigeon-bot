@@ -14,7 +14,7 @@ from aiogram.types import Update
 from pigeon.clock import FixedClock
 from pigeon.handlers.pigeon import build_router
 from pigeon.repo.store import Store
-from pigeon.scheduler import arrivals, fortunes
+from pigeon.scheduler import arrivals, courier, fortunes
 from pigeon.services import game
 from rigged import CONTENT, EveryDay
 
@@ -147,7 +147,7 @@ class Sender:
         await self.attempt(chat_id)
 
 
-@pytest.mark.parametrize("path", ["arrival", "flown", "fortune"])
+@pytest.mark.parametrize("path", ["arrival", "flown", "courier"])
 @pytest.mark.parametrize("forbidden", [True, False])
 async def test_scheduler_failure_isolated_and_forbidden_not_retried(store, caplog, path, forbidden):
     clock = FixedClock(NOW)
@@ -156,15 +156,18 @@ async def test_scheduler_failure_isolated_and_forbidden_not_retried(store, caplo
         for chat_id in (CHAT, OTHER):
             event = game.arrive(store, FixedClock(NOW - timedelta(hours=1)), chat_id)
             store.set_event_message(event.id, 10)
-    if path != "fortune":
+    if path != "courier":
         for chat_id in (CHAT, OTHER):
             store.save_plan(
                 chat_id, "2026-11-03", NOW, "pending" if path == "arrival" else "skipped"
             )
 
     async def tick():
-        if path == "fortune":
-            await fortunes.tick(store, clock, random.Random(1), sender, CONTENT.fortunes)
+        if path == "courier":
+            for chat_id in (CHAT, OTHER):
+                if store.courier_plan(chat_id, "2026-11-03") is None:
+                    store.save_courier_plan(chat_id, "2026-11-03", NOW, "pending")
+            await courier.tick(store, clock, random.Random(1), sender, CONTENT.fortunes)
         else:
             await arrivals.tick(store, clock, EveryDay(1), sender, CONTENT)
 

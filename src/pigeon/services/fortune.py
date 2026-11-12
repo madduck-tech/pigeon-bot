@@ -1,4 +1,4 @@
-"""Fortunes: one personal prediction per user per local day, and one daily post per chat."""
+"""Fortunes: one personal prediction per user per local day, and the Monday summary slot."""
 
 from __future__ import annotations
 

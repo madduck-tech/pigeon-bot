@@ -13,12 +13,12 @@ from datetime import UTC, datetime, timedelta
 from pigeon.clock import FixedClock
 from pigeon.content import load_content
 from pigeon.repo.store import Store
-from pigeon.scheduler import arrivals, fortunes
+from pigeon.scheduler import arrivals, courier, fortunes
 from pigeon.telegram.messages import TelegramArrivalSender
 from tools.stand.harness import REPO, Stand
 
 DESCRIPTION = (
-    "removed test bot: real Forbidden on arrivals, expired arrival edits, daily and Monday "
+    "removed test bot: real Forbidden on arrivals, expired arrival edits, courier and Monday "
     "posts; chat disabled, one warning without traceback, no request on the next pass"
 )
 
@@ -36,7 +36,7 @@ async def run(stand: Stand) -> None:
     content = load_content(REPO / "content")
     chat_id = stand.config.chat_id
     # Tuesday and Monday, after morning/quiet hours, independent of the operator's wall clock.
-    for case in ("arrival", "expiry", "daily", "monday"):
+    for case in ("arrival", "expiry", "courier", "monday"):
         store = Store(stand.run_dir / f"{case}.db")
         now = datetime(2026, 11, 9 if case == "monday" else 10, 12, tzinfo=UTC)
         clock = FixedClock(now)
@@ -55,6 +55,8 @@ async def run(stand: Stand) -> None:
                 "Гена",
             )
             store.set_event_message(event_id, 1)
+        elif case == "courier":
+            store.save_courier_plan(chat_id, now.date().isoformat(), now, "pending")
         elif case == "monday":
             store.claim_chronicle(chat_id, now.date().isoformat(), "pending", now)
             store.finish_chronicle(
@@ -64,6 +66,8 @@ async def run(stand: Stand) -> None:
         async def tick(case=case, store=store, clock=clock, rng=rng, sender=sender):
             if case in ("arrival", "expiry"):
                 await arrivals.tick(store, clock, rng, sender, content)
+            elif case == "courier":
+                await courier.tick(store, clock, rng, sender, content.fortunes, content.names)
             else:
                 await fortunes.tick(
                     store, clock, rng, sender, content.fortunes, content.names, content.quests
@@ -71,7 +75,11 @@ async def run(stand: Stand) -> None:
 
         capture = Capture()
         logger = logging.getLogger(
-            "pigeon.scheduler" if case in ("arrival", "expiry") else "pigeon.fortunes"
+            "pigeon.scheduler"
+            if case in ("arrival", "expiry")
+            else "pigeon.courier"
+            if case == "courier"
+            else "pigeon.fortunes"
         )
         logger.addHandler(capture)
         try:
