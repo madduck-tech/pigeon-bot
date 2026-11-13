@@ -252,6 +252,7 @@ class Stand:
         self.dispatcher.include_router(build_router(self.store, clock, content, rng, usage=usage))
 
     async def close(self) -> None:
+        await self.dispatcher.emit_shutdown()
         if self.store is not None:
             self.store.close()
         await self.bot.session.close()
@@ -279,6 +280,24 @@ class Stand:
         if actor.as_chat:
             message["sender_chat"] = self.chat
         return await self._feed(title, "command", actor, {"message": message})
+
+    async def membership(self, title: str, old: str, new: str) -> Step:
+        """Synthetic addition/removal of the verified test bot, in the stand group only."""
+
+        def member(status):
+            value = {"status": status, "user": self.me}
+            if status == "kicked":
+                value["until_date"] = 0
+            return value
+
+        payload = {
+            "chat": self.chat,
+            "from": self.admin.user,
+            "date": int(time.time()),
+            "old_chat_member": member(old),
+            "new_chat_member": member(new),
+        }
+        return await self._feed(title, "my_chat_member", self.admin, {"my_chat_member": payload})
 
     async def tap(self, title: str, actor: Actor, message: dict[str, Any], data: str) -> Step:
         """A synthetic button tap on a real message the bot sent to the stand chat."""

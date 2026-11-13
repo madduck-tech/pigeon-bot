@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
-from aiogram.types import BufferedInputFile, CallbackQuery, ChatMemberUpdated, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, ChatMemberUpdated, Message, Update
 
 from pigeon.budget import limits
 from pigeon.clock import Clock
@@ -21,6 +21,7 @@ from pigeon.render import texts
 from pigeon.repo.store import Store
 from pigeon.services import achievements, adult, fortune, game, weekly
 from pigeon.services.oboobs import OboobsClient
+from pigeon.services.setup_invitation import SetupInvitations
 from pigeon.services.shoo import ShooOutcome, shoo
 from pigeon.services.usage import Usage
 from pigeon.telegram.messages import (
@@ -57,14 +58,31 @@ def build_router(
     gift_provider=None,
     chronicle_enabled: bool = False,
     usage: Usage | None = None,
+    invitations: SetupInvitations | None = None,
 ) -> Router:
     router = Router(name="pigeon")
     usage = usage or Usage(store.usage, clock)
     router.callback_query.outer_middleware(ButtonUsage(usage, store))
     gift_provider = gift_provider or OboobsClient()
+    invitations = invitations or SetupInvitations(store)
+    router.shutdown.register(invitations.close)
 
     @router.my_chat_member(F.chat.type.in_(GROUP_TYPES))
-    async def membership_changed(update: ChatMemberUpdated) -> None:
+    async def membership_changed(update: ChatMemberUpdated, event_update: Update) -> None:
+        invitations.membership(
+            update.chat.id,
+            update.chat.type,
+            update.old_chat_member.status,
+            update.new_chat_member.status,
+            event_update.update_id,
+            lambda: update.bot.send_message(
+                update.chat.id,
+                texts.SETUP_CHOOSE,
+                reply_markup=timezone_keyboard(content.timezones),
+            ),
+            event_date=int(update.date.timestamp()),
+        )
+
         def present(member) -> bool:
             if member.status == "restricted":
                 return member.is_member
@@ -414,10 +432,12 @@ def build_router(
 
     @router.message(F.migrate_to_chat_id)
     async def chat_migrated_out(message: Message) -> None:
+        invitations.migration(message.chat.id, message.migrate_to_chat_id)
         _migrate(store, message.chat.id, message.migrate_to_chat_id)
 
     @router.message(F.migrate_from_chat_id)
     async def chat_migrated_in(message: Message) -> None:
+        invitations.migration(message.migrate_from_chat_id, message.chat.id)
         _migrate(store, message.migrate_from_chat_id, message.chat.id)
 
     return router

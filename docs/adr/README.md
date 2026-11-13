@@ -38,6 +38,8 @@ ADR-0002–0011 зарегистрированы ретроспективно 20
 | [0017](0017-manual-arrival-replaces-daily-auto.md) | Ручной игровой прилёт заменяет автоматический до конца дня | 2026-11-13 | accepted | Частично пересматривает [0007](0007-local-schedule-and-noise-budget.md) |
 | [0018](0018-usage-statistics.md) | Статистика использования в SQLite | 2026-11-13 | accepted | [Issue #20](https://github.com/madduck-tech/pigeon-bot/issues/20) |
 
+| [0019](0019-setup-invitation.md) | Приглашение к настройке после добавления бота | 2026-11-13 | accepted | Частично пересматривает [0007](0007-local-schedule-and-noise-budget.md), #14 |
+
 ## Новый документ
 
 1. Скопируйте [TEMPLATE.md](TEMPLATE.md) в `NNNN-short-title.md`, используя следующий последовательный номер.
