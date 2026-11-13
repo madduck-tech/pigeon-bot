@@ -19,6 +19,7 @@ from pigeon.repo.store import Store
 from pigeon.scheduler import arrivals, chronicle, courier, fortunes
 from pigeon.services.chronicle import ChronicleModel
 from pigeon.services.fortune_decks import migrate_courier
+from pigeon.services.setup_invitation import SetupInvitations
 from pigeon.services.usage import Usage
 from pigeon.telegram.commands import publish_menus
 from pigeon.telegram.messages import TelegramArrivalSender
@@ -100,8 +101,17 @@ async def run_bot(settings: Settings) -> None:
     dp = Dispatcher()
     rng = random.Random()
     model = chronicle_model(settings)
+    invitations = SetupInvitations(store)
     dp.include_router(
-        build_router(store, clock, content, rng, chronicle_enabled=model is not None, usage=usage)
+        build_router(
+            store,
+            clock,
+            content,
+            rng,
+            chronicle_enabled=model is not None,
+            usage=usage,
+            invitations=invitations,
+        )
     )
     await publish_menus(bot)
     tasks = [asyncio.create_task(_scheduler_loop(store, clock, bot, rng, content, usage))]
@@ -114,5 +124,6 @@ async def run_bot(settings: Settings) -> None:
     finally:
         for task in tasks:
             task.cancel()
+        await invitations.close()
         store.close()
         await bot.session.close()

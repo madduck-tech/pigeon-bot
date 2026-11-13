@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
+
 from aiogram.methods import DeleteMyCommands, GetMyCommands
 from aiogram.types import BotCommandScopeAllChatAdministrators, BotCommandScopeAllGroupChats
 
@@ -49,6 +52,8 @@ async def run(stand: Stand) -> None:
         published,
     )
 
+    await invitation_flow(stand)
+
     await common_flow(
         stand,
         setup=f"/setup {TIMEZONE}",
@@ -89,14 +94,14 @@ async def run(stand: Stand) -> None:
             for key, value in row["metrics"].items():
                 metrics[key] = metrics.get(key, 0) + value
     step.check("both allowed and refused arrivals were counted", metrics.get("command.arrive") == 2)
-    step.check("successful timezone save counted", metrics.get("setup.saved") == 1)
+    step.check("successful timezone save counted", metrics.get("setup.saved") == 2)
     step.check(
         "anonymous admin and bot member excluded from unique actors",
         report["participants"].get(stand.config.chat_id) == 1,
     )
     step.check(
         "synthetic callback rejection counted as real delivery failure",
-        metrics.get("delivery.callback_error") == 1,
+        metrics.get("delivery.callback_error") == 3,
     )
     step.check(
         "failed analytics write did not invent an extra command count",
@@ -172,3 +177,51 @@ async def common_flow(
     step.expect_handled()
     step.expect_no_call("getChatMember")
     step.expect_sent(texts.QUIET_SET.format(start=23, end=8))
+
+
+async def invitation_flow(stand: Stand) -> None:
+    """Real Bot API delivery after a synthetic addition; real permission lookups on taps."""
+    started = time.monotonic()
+    step = await stand.membership("new group: invite after addition", "left", "member")
+    step.expect_handled()
+    step.expect_no_call("sendMessage")
+    await asyncio.sleep(5.5)
+    sent = step.expect_sent(texts.SETUP_CHOOSE)
+    step.check("one invitation after the five-second delay", len(step.sent()) == 1)
+    step.check("five seconds elapsed", time.monotonic() - started >= 5)
+    step.check(
+        "invitation did not enable the chat", stand.store.get_chat(stand.config.chat_id) is None
+    )
+    button = step.expect_button("pg:tz:")
+    if sent is not None and button is not None:
+        message, data = button
+        step = await stand.tap(
+            "member cannot choose invitation timezone", stand.member, message, data
+        )
+        step.expect_handled()
+        step.expect_member_lookup(stand.config.member_id, ("member",))
+        step.expect_expected_answer_error()
+        answers = step.calls_of("answerCallbackQuery")
+        step.check(
+            "member refused", bool(answers) and answers[0]["params"].get("text") == texts.ADMIN_ONLY
+        )
+        step.check(
+            "refusal left chat unconfigured", stand.store.get_chat(stand.config.chat_id) is None
+        )
+        step = await stand.tap("admin chooses invitation timezone", stand.admin, message, data)
+        step.expect_handled()
+        step.expect_member_lookup(stand.config.admin_id, ADMIN_STATUSES)
+        step.expect_expected_answer_error()
+        step.expect_edit(message["message_id"])
+        step.check("admin enabled chat", stand.store.is_enabled(stand.config.chat_id))
+
+    step = await stand.membership("configured chat: removal", "member", "left")
+    step.expect_handled()
+    step.check("removal disabled chat", not stand.store.is_enabled(stand.config.chat_id))
+    step = await stand.membership(
+        "configured disabled chat: readdition stays silent", "left", "member"
+    )
+    step.expect_handled()
+    await asyncio.sleep(5.5)
+    step.expect_no_call("sendMessage")
+    step.check("readdition did not enable chat", not stand.store.is_enabled(stand.config.chat_id))

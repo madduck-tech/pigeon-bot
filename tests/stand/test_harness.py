@@ -490,7 +490,7 @@ async def test_flood_waits_are_visible_in_the_summary_and_console(tmp_path, tele
     report = stand.report()
     assert report["passed"]  # the change still works, the burst is a warning
     assert report["summary"]["flood_waits"] == [
-        {"step": "setup by the admin", "method": "sendMessage", "seconds": [2]}
+        {"step": "new group: invite after addition", "method": "sendMessage", "seconds": [2]}
     ]
     cli._print_summary(report, tmp_path / "report.json")
     assert "[WARN] flood control" in capsys.readouterr().out
