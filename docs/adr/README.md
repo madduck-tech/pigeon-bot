@@ -35,6 +35,8 @@ ADR-0002–0011 зарегистрированы ретроспективно 20
 
 | [0016](0016-fortune-courier.md) | Утренний голубь-предсказатель без многочастных пророчеств | 2026-11-12 | accepted | Частично пересматривает [0001](0001-diversify-pigeon-experience.md), [0007](0007-local-schedule-and-noise-budget.md), [0009](0009-yaml-content-startup-validation.md) |
 
+| [0017](0017-manual-arrival-replaces-daily-auto.md) | Ручной игровой прилёт заменяет автоматический до конца дня | 2026-11-13 | accepted | Частично пересматривает [0007](0007-local-schedule-and-noise-budget.md) |
+
 ## Новый документ
 
 1. Скопируйте [TEMPLATE.md](TEMPLATE.md) в `NNNN-short-title.md`, используя следующий последовательный номер.

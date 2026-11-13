@@ -52,7 +52,10 @@ def flies_today(store: Store, rng: random.Random, chat_id: int, local_now: datet
     over random days. It needs no stored schedule: a lost arrival stays in the budget and the
     remaining days take it, and the last days are certain if the budget is still unused.
     """
-    day_count = store.count_auto_events_since(chat_id, local_day_start_utc(local_now))
+    day_start = local_day_start_utc(local_now)
+    if store.has_manual_event_since(chat_id, day_start):
+        return False
+    day_count = store.count_auto_events_since(chat_id, day_start)
     if day_count >= DAILY_AUTO_LIMIT:
         return False
     week_count = store.count_auto_events_since(chat_id, local_week_start_utc(local_now))

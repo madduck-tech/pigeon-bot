@@ -1178,3 +1178,68 @@ async def test_stats_all_ignores_case(harness, store, clock, arg) -> None:
     await harness.command(f"/stats {arg}")
     reference, answer = harness.session.said()
     assert answer == reference and "Золотой плевок" in answer
+
+
+@pytest.mark.parametrize("planned", [False, True])
+@pytest.mark.parametrize("delivered", [False, True])
+async def test_manual_send_in_flight_does_not_spend_daily_plan(
+    harness, store, clock, monkeypatch, planned, delivered
+):
+    from pigeon.scheduler import arrivals
+    from pigeon.telegram.messages import TelegramArrivalSender
+    from rigged import EveryDay
+
+    class Early(EveryDay):
+        def randrange(self, *args):
+            return 0
+
+    clock.set(datetime(2026, 11, 2, 5, 0, tzinfo=UTC))  # Moscow08:00
+    rng = Early(29)
+    sender = TelegramArrivalSender(harness.bot, store, clock, CONTENT.quests)
+    if planned:
+        await arrivals.tick(store, clock, rng, sender, CONTENT)
+        assert store.get_plan(CHAT, "2026-11-02").status == "pending"
+    clock.set(datetime(2026, 11, 2, 5, 59, tzinfo=UTC))  # just before due09:00
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = harness.session.make_request
+    first_send = True
+
+    async def delayed_manual(bot, method, timeout=None):
+        nonlocal first_send
+        if isinstance(method, SendMessage) and first_send:
+            first_send = False
+            entered.set()
+            await release.wait()
+            if not delivered:
+                raise RuntimeError("controlled failed manual send")
+        return await original(bot, method, timeout)
+
+    monkeypatch.setattr(harness.session, "make_request", delayed_manual)
+    task = asyncio.create_task(harness.command("/arrive"))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        manual = store.current_open_event(CHAT)
+        assert manual is not None and manual.message_id is None
+        # Tick while network call is outstanding, first before due time and then when due.
+        await arrivals.tick(store, clock, rng, sender, CONTENT)
+        clock.set(datetime(2026, 11, 2, 6, 0, tzinfo=UTC))
+        await arrivals.tick(store, clock, rng, sender, CONTENT)
+        assert store.get_plan(CHAT, "2026-11-02").status == "pending"
+        release.set()
+        if delivered:
+            await task
+            assert store.get_event(manual.id).message_id is not None
+            clock.set(manual.closes_at)
+        else:
+            with pytest.raises(RuntimeError, match="controlled failed manual send"):
+                await task
+            assert store.get_event(manual.id) is None
+        await arrivals.tick(store, clock, rng, sender, CONTENT)
+        assert store.get_plan(CHAT, "2026-11-02").status == ("skipped" if delivered else "fired")
+        auto_count = store.count_auto_events_since(CHAT, datetime(2026, 11, 2, tzinfo=UTC))
+        assert auto_count == (0 if delivered else 1)
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

@@ -113,7 +113,10 @@ async def test_manual_arrival_in_progress_blocks_planned_one(store, clock, sende
     _enable(store)
     await _run(store, clock, sender)
     plan = store.get_plan(CHAT, "2026-11-02")
-    store.open_event(CHAT, plan.planned_at, plan.planned_at + timedelta(minutes=60), "manual")
+    event_id = store.open_event(
+        CHAT, plan.planned_at, plan.planned_at + timedelta(minutes=60), "manual"
+    )
+    store.set_event_message(event_id, 900)
     clock.set(plan.planned_at)
     await _run(store, clock, sender)
     assert sender.sent == []
