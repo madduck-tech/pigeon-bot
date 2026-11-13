@@ -5,7 +5,9 @@ from __future__ import annotations
 from aiogram.methods import DeleteMyCommands, GetMyCommands
 from aiogram.types import BotCommandScopeAllChatAdministrators, BotCommandScopeAllGroupChats
 
+from pigeon.clock import SystemClock
 from pigeon.render import texts
+from pigeon.repo.usage import read_report
 from tools.stand.harness import ADMIN_STATUSES, Stand
 
 DESCRIPTION = (
@@ -55,6 +57,56 @@ async def run(stand: Stand) -> None:
         arrive="/arrive",
         quiet="/quiet 23 8",
     )
+
+    step = await stand.command("help discloses usage retention", stand.admin, "/help")
+    step.expect_handled()
+    step.expect_sent(texts.help_text())
+    step.check(
+        "help discloses analytics and delayed cleanup",
+        "90 дней" in texts.help_text() and "откладывается" in texts.help_text(),
+    )
+
+    # A real SQLite failure during a command, followed by a real Bot API answer.
+    conn = stand.store._conn
+    conn.execute(
+        "CREATE TEMP TRIGGER fail_usage BEFORE INSERT ON usage_counters "
+        "BEGIN SELECT RAISE(FAIL, 'stand usage unavailable'); END"
+    )
+    try:
+        step = await stand.command(
+            "usage write failure does not block status", stand.admin, "/pigeon"
+        )
+        step.expect_handled()
+        step.expect_sent_except(*REFUSALS)
+    finally:
+        conn.execute("DROP TRIGGER fail_usage")
+
+    step = stand.begin("persisted usage from the Telegram flow", "assertion")
+    report = read_report(stand.db_path, SystemClock().now())
+    metrics = {}
+    for row in report["days"]:
+        if row["chat_id"] == stand.config.chat_id:
+            for key, value in row["metrics"].items():
+                metrics[key] = metrics.get(key, 0) + value
+    step.check("both allowed and refused arrivals were counted", metrics.get("command.arrive") == 2)
+    step.check("successful timezone save counted", metrics.get("setup.saved") == 1)
+    step.check(
+        "anonymous admin and bot member excluded from unique actors",
+        report["participants"].get(stand.config.chat_id) == 1,
+    )
+    step.check(
+        "synthetic callback rejection counted as real delivery failure",
+        metrics.get("delivery.callback_error") == 1,
+    )
+    step.check(
+        "failed analytics write did not invent an extra command count",
+        metrics.get("command.pigeon") == 1,
+    )
+    step.check(
+        "the real gameplay spit was persisted",
+        sum(v for k, v in metrics.items() if k.startswith("hit.")) == 1,
+    )
+    stand.extra["usage_metrics"] = metrics
 
     expected = {
         scope.type: [{"command": c.command, "description": c.description} for c in commands]

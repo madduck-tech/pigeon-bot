@@ -3,7 +3,7 @@
 Дата: 2026-11-06  
 Статус: accepted  
 Supersedes: —  
-Superseded by: —  
+Superseded by: [ADR-0018](0018-usage-statistics.md) частично (перенос аналитики без настройки)
 Issue / PR: —
 
 ## Контекст
@@ -49,3 +49,7 @@ Issue / PR: —
 - [ADR-0004](0004-privacy-and-minimal-data.md) — отдельные правила приватности и минимизации данных.
 - [design.md](../design.md), §2, §3 и §5 — ограничения Telegram, мультичат и модель данных.
 - [store.py](../../src/pigeon/repo/store.py) и [pigeon.py](../../src/pigeon/handlers/pigeon.py) — изоляция и перенос чатов.
+
+Уточнение 2026-11-13: [ADR-0018](0018-usage-statistics.md) расширяет проверку
+наличия исходного и целевого состояния на новые таблицы аналитики, включая
+чаты без `/setup`. Остальные правила этого ADR продолжают действовать.

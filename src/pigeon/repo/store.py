@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from pigeon.repo.usage import SCHEMA as USAGE_SCHEMA
+from pigeon.repo.usage import UsageRepository
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chats (
     chat_id      INTEGER PRIMARY KEY,
@@ -343,6 +346,8 @@ class Store:
         self._conn = sqlite3.connect(str(path))
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        self._conn.executescript(USAGE_SCHEMA)
+        self.usage = UsageRepository(self._conn)
         old_daily = "sent_at" not in self._columns("daily_fortunes")
         for table, column, decl in MIGRATIONS:
             self._ensure_column(table, column, decl)
@@ -406,9 +411,11 @@ class Store:
         dead by then, so it is only switched off, which also stops every retry aimed at it.
         Tables are found from the schema, so a new table cannot be forgotten here.
         """
-        if self.get_chat(old_chat_id) is None:
+        if old_chat_id == new_chat_id:
             return False
-        if self.get_chat(new_chat_id) is not None:
+        if self.get_chat(old_chat_id) is None and not self.usage.has_chat(old_chat_id):
+            return False
+        if self.get_chat(new_chat_id) is not None or self.usage.has_chat(new_chat_id):
             with self._conn:
                 self._conn.execute("UPDATE chats SET enabled = 0 WHERE chat_id = ?", (old_chat_id,))
             return False

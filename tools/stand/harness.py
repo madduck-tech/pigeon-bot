@@ -30,6 +30,8 @@ from pigeon.clock import SystemClock
 from pigeon.content import load_content
 from pigeon.handlers.pigeon import build_router
 from pigeon.repo.store import Store
+from pigeon.services.usage import Usage
+from pigeon.telegram.usage import install_delivery_usage
 from tools.stand.config import StandConfig
 from tools.stand.recorder import Recorder, StandGuardError, plain
 
@@ -242,9 +244,12 @@ class Stand:
 
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.store = Store(self.db_path)
+        clock = SystemClock()
+        usage = Usage(self.store.usage, clock)
+        install_delivery_usage(self.bot, usage)
         rng = random.Random()
         content = load_content(REPO / "content")
-        self.dispatcher.include_router(build_router(self.store, SystemClock(), content, rng))
+        self.dispatcher.include_router(build_router(self.store, clock, content, rng, usage=usage))
 
     async def close(self) -> None:
         if self.store is not None:
