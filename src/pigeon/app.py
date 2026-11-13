@@ -19,8 +19,10 @@ from pigeon.repo.store import Store
 from pigeon.scheduler import arrivals, chronicle, courier, fortunes
 from pigeon.services.chronicle import ChronicleModel
 from pigeon.services.fortune_decks import migrate_courier
+from pigeon.services.usage import Usage
 from pigeon.telegram.commands import publish_menus
 from pigeon.telegram.messages import TelegramArrivalSender
+from pigeon.telegram.usage import install_delivery_usage
 
 log = logging.getLogger("pigeon")
 
@@ -48,10 +50,17 @@ async def _scheduler_pass(store, clock, rng, sender, content: Content) -> None:
 
 
 async def _scheduler_loop(
-    store: Store, clock: Clock, bot: Bot, rng: random.Random, content: Content
+    store: Store,
+    clock: Clock,
+    bot: Bot,
+    rng: random.Random,
+    content: Content,
+    usage: Usage | None = None,
 ) -> None:
     sender = TelegramArrivalSender(bot, store, clock, content.quests)
     while True:
+        if usage is not None:
+            usage.maintain()
         await _scheduler_pass(store, clock, rng, sender, content)
         await asyncio.sleep(SCHEDULER_INTERVAL_SECONDS)
 
@@ -86,12 +95,16 @@ async def run_bot(settings: Settings) -> None:
     migrate_courier(store, content.fortunes)
     bot = build_bot(settings.bot_token.get_secret_value())
     clock = SystemClock()
+    usage = Usage(store.usage, clock)
+    install_delivery_usage(bot, usage)
     dp = Dispatcher()
     rng = random.Random()
     model = chronicle_model(settings)
-    dp.include_router(build_router(store, clock, content, rng, chronicle_enabled=model is not None))
+    dp.include_router(
+        build_router(store, clock, content, rng, chronicle_enabled=model is not None, usage=usage)
+    )
     await publish_menus(bot)
-    tasks = [asyncio.create_task(_scheduler_loop(store, clock, bot, rng, content))]
+    tasks = [asyncio.create_task(_scheduler_loop(store, clock, bot, rng, content, usage))]
     if model is not None and content.chronicle is not None:
         tasks.append(asyncio.create_task(_chronicle_loop(store, clock, model, content)))
         log.info("weekly chronicle on, model %s", settings.chronicle_model)

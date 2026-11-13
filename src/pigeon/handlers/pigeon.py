@@ -22,12 +22,14 @@ from pigeon.repo.store import Store
 from pigeon.services import achievements, adult, fortune, game, weekly
 from pigeon.services.oboobs import OboobsClient
 from pigeon.services.shoo import ShooOutcome, shoo
+from pigeon.services.usage import Usage
 from pigeon.telegram.messages import (
     TelegramArrivalSender,
     arrival_keyboard,
     gift_keyboard,
     timezone_keyboard,
 )
+from pigeon.telegram.usage import ButtonUsage
 
 log = logging.getLogger("pigeon.handlers")
 
@@ -54,12 +56,24 @@ def build_router(
     rng: random.Random,
     gift_provider=None,
     chronicle_enabled: bool = False,
+    usage: Usage | None = None,
 ) -> Router:
     router = Router(name="pigeon")
+    usage = usage or Usage(store.usage, clock)
+    router.callback_query.outer_middleware(ButtonUsage(usage, store))
     gift_provider = gift_provider or OboobsClient()
 
     @router.my_chat_member(F.chat.type.in_(GROUP_TYPES))
     async def membership_changed(update: ChatMemberUpdated) -> None:
+        def present(member) -> bool:
+            if member.status == "restricted":
+                return member.is_member
+            return member.status not in {"left", "kicked"}
+
+        was_member = present(update.old_chat_member)
+        is_member = present(update.new_chat_member)
+        if was_member != is_member:
+            usage.record(update.chat.id, "membership.added" if is_member else "membership.removed")
         if update.new_chat_member.status in {"kicked", "left"}:
             store.disable_chat(update.chat.id)
             log.warning("chat %s: bot removed; chat disabled", update.chat.id)
@@ -82,6 +96,14 @@ def build_router(
                 if message.chat.type not in GROUP_TYPES:
                     await message.answer(texts.NOT_GROUP)
                     return
+                actor = message.from_user
+                usage.record(
+                    message.chat.id,
+                    f"command.{name}",
+                    actor.id
+                    if actor and not actor.is_bot and message.sender_chat is None
+                    else None,
+                )
                 if needs_setup and not store.is_enabled(message.chat.id):
                     await message.answer(texts.NOT_ENABLED)
                     return
@@ -130,6 +152,7 @@ def build_router(
             await message.answer(texts.TZ_BAD)
             return
         store.enable_chat(chat_id, clock.now(), tz)
+        usage.record(chat_id, "setup.saved")
         await message.answer(texts.SETUP_DONE.format(tz=tz))
 
     @command("adult", admin_only=True)
@@ -380,6 +403,7 @@ def build_router(
             await callback.answer(texts.TZ_UNKNOWN)
             return
         store.enable_chat(chat_id, clock.now(), tz)
+        usage.record(chat_id, "setup.saved")
         await callback.answer()
         await _edit(callback.message, texts.SETUP_DONE.format(tz=tz), None)
 

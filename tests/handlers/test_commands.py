@@ -939,7 +939,12 @@ ANON_ADMIN = {"user_id": 1087968824, "sender_chat": Chat(id=CHAT, type="supergro
 
 
 def _dump(store) -> str:
-    return "\n".join(store._conn.iterdump())
+    """Game state only: ADR-0018 intentionally counts even rejected commands."""
+    return "\n".join(
+        line
+        for line in store._conn.iterdump()
+        if '"usage_' not in line and not line.startswith("CREATE TABLE usage_")
+    )
 
 
 def _no_member_lookups(harness) -> bool:

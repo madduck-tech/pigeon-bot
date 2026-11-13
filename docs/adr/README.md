@@ -19,7 +19,7 @@ ADR-0002–0011 зарегистрированы ретроспективно 20
 |---|---|---|---|---|
 | [0001](0001-diversify-pigeon-experience.md) | Разнообразие предсказаний и прилётов | 2026-11-05 | accepted | Частично пересмотрен [0012](0012-adult-pigeon-gift.md) |
 | [0002](0002-focus-on-dovecote.md) | Фокус продукта на Голубятне | 2026-11-06 | accepted | Уточняется [0001](0001-diversify-pigeon-experience.md) |
-| [0003](0003-chat-isolation-and-migration.md) | Изоляция чатов и перенос `chat_id` без слияния | 2026-11-06 | accepted | — |
+| [0003](0003-chat-isolation-and-migration.md) | Изоляция чатов и перенос `chat_id` без слияния | 2026-11-06 | accepted | Частично пересмотрен [0018](0018-usage-statistics.md) |
 | [0004](0004-privacy-and-minimal-data.md) | Приватность, минимум данных и отсутствие пингов | 2026-11-06 | accepted | — |
 | [0005](0005-layered-monolith-sqlite.md) | Слоистый монолит, SQLite и инжектируемые время и случайность | 2026-11-06 | accepted | — |
 | [0006](0006-single-message-arrival-loop.md) | Игровой цикл в одном редактируемом сообщении | 2026-11-06 | accepted | Детали развития в [0001](0001-diversify-pigeon-experience.md); частично пересмотрен [0012](0012-adult-pigeon-gift.md) |
@@ -36,6 +36,7 @@ ADR-0002–0011 зарегистрированы ретроспективно 20
 | [0016](0016-fortune-courier.md) | Утренний голубь-предсказатель без многочастных пророчеств | 2026-11-12 | accepted | Частично пересматривает [0001](0001-diversify-pigeon-experience.md), [0007](0007-local-schedule-and-noise-budget.md), [0009](0009-yaml-content-startup-validation.md) |
 
 | [0017](0017-manual-arrival-replaces-daily-auto.md) | Ручной игровой прилёт заменяет автоматический до конца дня | 2026-11-13 | accepted | Частично пересматривает [0007](0007-local-schedule-and-noise-budget.md) |
+| [0018](0018-usage-statistics.md) | Статистика использования в SQLite | 2026-11-13 | accepted | [Issue #20](https://github.com/madduck-tech/pigeon-bot/issues/20) |
 
 ## Новый документ
 
