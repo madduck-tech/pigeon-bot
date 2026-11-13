@@ -102,7 +102,7 @@ def arrive(
     """Open a new arrival. Returns None if a pigeon is already sitting in this chat.
 
     source is 'manual' (an admin ran /arrive) or 'auto' (the scheduler planned it).
-    Only 'auto' arrivals count against the spontaneous-message budget.
+    Only 'auto' arrivals consume the weekly budget; a manual game suppresses today's auto.
     """
     if not store.is_enabled(chat_id):
         raise NotEnabled(chat_id)

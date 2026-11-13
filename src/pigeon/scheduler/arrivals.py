@@ -90,7 +90,14 @@ async def _tick_chat(
     if not limits.can_publish(chat, now):
         store.save_plan(chat_id, local_date, plan.planned_at, "skipped")
         return
-    # A manual arrival in progress blocks the planned one for the day.
+    # A completed manual game also replaces a plan made before that game started.
+    if store.has_manual_event_since(chat_id, limits.local_day_start_utc(local_now)):
+        store.save_plan(chat_id, local_date, plan.planned_at, "skipped")
+        return
+    # A send still awaiting Telegram may fail and delete the event. Keep the plan retryable.
+    if event is not None and event.source == "manual" and event.message_id is None:
+        return
+    # A delivered arrival in progress blocks the planned one for the day.
     if event is not None:
         store.save_plan(chat_id, local_date, plan.planned_at, "skipped")
         return

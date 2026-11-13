@@ -646,6 +646,19 @@ class Store:
                 "UPDATE events SET message_id = ? WHERE id = ?", (message_id, event_id)
             )
 
+    def has_manual_event_since(self, chat_id: int, since: datetime) -> bool:
+        """Only delivered manual arrivals count, including delivery proved by a tap."""
+        row = self._conn.execute(
+            "SELECT 1 FROM events WHERE chat_id = ? AND source = 'manual' "
+            "AND opened_at >= ? AND (message_id IS NOT NULL "
+            "OR EXISTS (SELECT 1 FROM hits WHERE hits.chat_id = events.chat_id "
+            "AND hits.event_id = events.id) "
+            "OR EXISTS (SELECT 1 FROM shoos WHERE shoos.chat_id = events.chat_id "
+            "AND shoos.event_id = events.id)) LIMIT 1",
+            (chat_id, _ts(since)),
+        ).fetchone()
+        return row is not None
+
     def count_auto_events_since(self, chat_id: int, since: datetime) -> int:
         row = self._conn.execute(
             "SELECT COUNT(*) AS n FROM events WHERE chat_id = ? AND source = 'auto' "
