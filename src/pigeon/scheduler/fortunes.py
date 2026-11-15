@@ -16,6 +16,7 @@ from pigeon.budget import limits
 from pigeon.clock import Clock
 from pigeon.content import Fortune, Quest
 from pigeon.repo.store import ChatSettings, Store
+from pigeon.scheduler.rights import InsufficientRights, check_rights
 from pigeon.services import fortune, weekly
 
 log = logging.getLogger("pigeon.fortunes")
@@ -53,7 +54,7 @@ async def _post(
             store.save_fortune_issue(chat.chat_id, 0, local_day, None, rendered)
     if rendered is None:
         return
-    await sender.send_text(chat.chat_id, rendered)
+    await check_rights(sender.send_text(chat.chat_id, rendered))
     store.mark_daily_fortune_sent(chat.chat_id, local_day, clock.now())
 
 
@@ -70,9 +71,12 @@ async def tick(
     for chat in store.enabled_chats():
         try:
             await _post(store, clock, rng, sender, lines, names, chat, quests)
-        except TelegramForbiddenError:
+        except (TelegramForbiddenError, InsufficientRights):
             store.disable_chat(chat.chat_id)
-            log.warning("chat %s: Telegram access forbidden; chat disabled", chat.chat_id)
+            log.warning(
+                "chat %s: Telegram access forbidden or insufficient rights; chat disabled",
+                chat.chat_id,
+            )
         except TelegramMigrateToChat as exc:
             log.warning("chat %s moved to %s", chat.chat_id, exc.migrate_to_chat_id)
             store.migrate_chat(chat.chat_id, exc.migrate_to_chat_id)

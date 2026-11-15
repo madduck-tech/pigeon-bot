@@ -18,6 +18,7 @@ from pigeon.budget import limits
 from pigeon.clock import Clock
 from pigeon.content import Content
 from pigeon.repo.store import ArrivalPlan, ChatSettings, Event, Store
+from pigeon.scheduler.rights import InsufficientRights, check_rights
 from pigeon.services import achievements, game, weekly
 
 log = logging.getLogger("pigeon.scheduler")
@@ -71,8 +72,10 @@ async def _tick_chat(
     if event is not None and now >= event.closes_at:
         store.close_event(event.id)
         if event.message_id is not None:
-            await sender.mark_flown(
-                chat_id, event.message_id, game.flown_text(store, event, now, content.quests)
+            await check_rights(
+                sender.mark_flown(
+                    chat_id, event.message_id, game.flown_text(store, event, now, content.quests)
+                )
             )
         event = None
 
@@ -114,11 +117,11 @@ async def _tick_chat(
     if arrival is None:
         return
     try:
-        message_id = await sender.send_arrival(chat_id, arrival)
+        message_id = await check_rights(sender.send_arrival(chat_id, arrival))
     except Exception as exc:
         # Nobody saw it, so it must not count as an arrival. The plan stays and retries.
         if game.delete_unsent_event(store, chat_id, arrival.id) or isinstance(
-            exc, TelegramForbiddenError
+            exc, (TelegramForbiddenError, InsufficientRights)
         ):
             raise
         log.warning("chat %s: arrival %s was delivered, response lost", chat_id, arrival.id)
@@ -140,9 +143,12 @@ async def tick(
         try:
             weekly.ensure(store, chat.chat_id, clock.now(), content.quests, rng)
             await _tick_chat(store, clock, rng, sender, content, chat)
-        except TelegramForbiddenError:
+        except (TelegramForbiddenError, InsufficientRights):
             store.disable_chat(chat.chat_id)
-            log.warning("chat %s: Telegram access forbidden; chat disabled", chat.chat_id)
+            log.warning(
+                "chat %s: Telegram access forbidden or insufficient rights; chat disabled",
+                chat.chat_id,
+            )
         except TelegramMigrateToChat as exc:
             # Safety net for a migration whose service message the bot never received.
             log.warning("chat %s moved to %s", chat.chat_id, exc.migrate_to_chat_id)

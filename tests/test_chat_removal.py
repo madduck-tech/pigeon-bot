@@ -250,3 +250,78 @@ async def test_monday_post_with_stored_chronicle_disables_forbidden_chat(store):
     assert "Голуби держались бодро." in issue.rendered_text
     assert issue.sent_at is None
     assert store.get_fortune_issue(OTHER, 0, "2026-11-09").sent_at is not None
+
+
+@pytest.mark.parametrize("path", ["arrival", "flown", "courier", "fortunes"])
+@pytest.mark.parametrize(
+    "message,disabled",
+    [
+        ("Bad Request: Not Enough Rights to send", True),
+        ("Bad Request: message is not modified", False),
+    ],
+)
+async def test_bad_request_rights_isolated_across_scheduler_ticks(store, path, message, disabled):
+    from aiogram.exceptions import TelegramBadRequest
+
+    now = NOW - timedelta(days=1) if path == "fortunes" else NOW
+    clock = FixedClock(now)
+
+    class BadRequestSender(Sender):
+        async def attempt(self, chat_id):
+            self.calls.append(chat_id)
+            if chat_id == CHAT:
+                raise TelegramBadRequest(SendMessage(chat_id=chat_id, text="test"), message)
+            return 123
+
+    sender = BadRequestSender()
+    for chat_id in (CHAT, OTHER):
+        if path == "flown":
+            event = game.arrive(store, FixedClock(now - timedelta(hours=1)), chat_id)
+            store.set_event_message(event.id, 10)
+        if path in ("arrival", "flown"):
+            store.save_plan(
+                chat_id, now.date().isoformat(), now, "pending" if path == "arrival" else "skipped"
+            )
+        if path == "courier":
+            store.save_courier_plan(chat_id, now.date().isoformat(), now, "pending")
+
+    async def run_tick():
+        if path == "courier":
+            await courier.tick(store, clock, random.Random(1), sender, CONTENT.fortunes)
+        elif path == "fortunes":
+            await fortunes.tick(
+                store, clock, random.Random(1), sender, CONTENT.fortunes, quests=CONTENT.quests
+            )
+        else:
+            await arrivals.tick(store, clock, EveryDay(1), sender, CONTENT)
+
+    await run_tick()
+    assert sender.calls == [CHAT, OTHER]
+    assert store.is_enabled(CHAT) is not disabled
+    assert store.is_enabled(OTHER)
+    sender.calls.clear()
+    await run_tick()
+    assert (CHAT in sender.calls) is (not disabled and path != "flown")
+    if disabled:
+        store.enable_chat(CHAT, now, "Europe/Moscow")
+        assert store.is_enabled(CHAT)
+        if path != "flown":
+            await run_tick()
+            assert CHAT in sender.calls
+
+
+async def test_other_exception_with_rights_text_does_not_disable(store):
+    class RuntimeSender(Sender):
+        async def attempt(self, chat_id):
+            self.calls.append(chat_id)
+            if chat_id == CHAT:
+                raise RuntimeError("not enough rights")
+            return 123
+
+    for chat_id in (CHAT, OTHER):
+        store.save_plan(chat_id, NOW.date().isoformat(), NOW, "pending")
+    sender = RuntimeSender()
+    await arrivals.tick(store, FixedClock(NOW), EveryDay(1), sender, CONTENT)
+    assert store.is_enabled(CHAT)
+    await arrivals.tick(store, FixedClock(NOW), EveryDay(1), sender, CONTENT)
+    assert sender.calls.count(CHAT) == 2
