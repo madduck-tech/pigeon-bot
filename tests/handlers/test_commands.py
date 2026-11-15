@@ -16,12 +16,13 @@ from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.methods import (
     AnswerCallbackQuery,
     EditMessageText,
+    GetChat,
     GetChatMember,
     GetMe,
     SendMessage,
     SendPhoto,
 )
-from aiogram.types import CallbackQuery, Chat, Message, Update, User
+from aiogram.types import CallbackQuery, Chat, ChatFullInfo, Message, Update, User
 
 from pigeon.clock import FixedClock
 from pigeon.content import load_content
@@ -75,6 +76,22 @@ class FakeSession(BaseSession):
         chat = Chat(id=CHAT, type="supergroup")
         if isinstance(method, GetMe):
             return User(id=42, is_bot=True, first_name="Голубятня", username=BOT_USERNAME)
+        if isinstance(method, GetChat):
+            assert method.chat_id == 42
+            return ChatFullInfo(
+                id=42,
+                type="private",
+                accent_color_id=0,
+                username=BOT_USERNAME,
+                max_reaction_count=0,
+                accepted_gift_types={
+                    "unlimited_gifts": False,
+                    "limited_gifts": False,
+                    "unique_gifts": False,
+                    "premium_subscription": False,
+                    "gifts_from_channels": False,
+                },
+            )
         if isinstance(method, GetChatMember):
             return SimpleNamespace(status="administrator" if method.user_id == ADMIN else "member")
         if isinstance(method, SendPhoto):
