@@ -8,6 +8,7 @@ from datetime import timedelta
 from aiogram.exceptions import TelegramForbiddenError, TelegramMigrateToChat
 
 from pigeon.budget import limits
+from pigeon.scheduler.rights import InsufficientRights, check_rights
 from pigeon.services import fortune_decks
 
 log = logging.getLogger("pigeon.courier")
@@ -67,7 +68,7 @@ async def _tick_chat(store, clock, rng, sender, fortunes, names, chat):
     ):
         store.save_courier_plan(pending["chat_id"], day, plan.planned_at, "skipped")
         return
-    await sender.send_text(chat.chat_id, pending["rendered_text"])
+    await check_rights(sender.send_text(chat.chat_id, pending["rendered_text"]))
     acknowledged_at = clock.now()
     published_day = limits.chat_local(chat, acknowledged_at).date().isoformat()
     store.confirm_courier(chat.chat_id, day, published_day, pending["id"], acknowledged_at)
@@ -78,9 +79,12 @@ async def tick(store, clock, rng, sender, fortunes, names=("Гена",)):
     for chat in store.enabled_chats():
         try:
             await _tick_chat(store, clock, rng, sender, fortunes, names, chat)
-        except TelegramForbiddenError:
+        except (TelegramForbiddenError, InsufficientRights):
             store.disable_chat(chat.chat_id)
-            log.warning("chat %s: Telegram access forbidden; chat disabled", chat.chat_id)
+            log.warning(
+                "chat %s: Telegram access forbidden or insufficient rights; chat disabled",
+                chat.chat_id,
+            )
         except TelegramMigrateToChat as exc:
             store.migrate_chat(chat.chat_id, exc.migrate_to_chat_id)
         except Exception:

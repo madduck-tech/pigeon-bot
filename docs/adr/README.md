@@ -40,6 +40,8 @@ ADR-0002–0011 зарегистрированы ретроспективно 20
 
 | [0019](0019-setup-invitation.md) | Приглашение к настройке после добавления бота | 2026-11-13 | accepted | Частично пересматривает [0007](0007-local-schedule-and-noise-budget.md), #14 |
 
+| [0020](0020-scheduler-insufficient-rights.md) | Остановка чата при ошибке прав планировщика | 2026-11-15 | accepted | Частично пересматривает [0007](0007-local-schedule-and-noise-budget.md), [0016](0016-fortune-courier.md), #33 |
+
 ## Новый документ
 
 1. Скопируйте [TEMPLATE.md](TEMPLATE.md) в `NNNN-short-title.md`, используя следующий последовательный номер.
