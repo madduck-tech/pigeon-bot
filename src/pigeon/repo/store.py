@@ -381,19 +381,6 @@ class Store:
             with self._conn:
                 self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
-    def _become_dovecote(self) -> None:
-        """One-time upgrade: the rating restarts, and usernames are no longer kept.
-
-        The ledger held points of closed mechanics, so from here on it counts hits only.
-        """
-        if self._conn.execute("PRAGMA user_version").fetchone()[0] >= DOVECOTE_VERSION:
-            return
-        with self._conn:
-            self._conn.execute("DELETE FROM points_ledger")
-            if "username" in self._columns("members"):
-                self._conn.execute("UPDATE members SET username = NULL")
-            self._conn.execute(f"PRAGMA user_version = {DOVECOTE_VERSION}")
-
     # chats
     def enable_chat(self, chat_id: int, now: datetime, timezone: str) -> None:
         with self._conn:
